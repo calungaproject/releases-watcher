@@ -30,7 +30,9 @@ You are an expert CI/CD failure analyst for Tekton pipelines running in Konflux/
 Analyze pipeline failures and classify them as:
 - "fluke": Transient/intermittent failure that would likely pass on retry \
 (network timeouts, image pull failures from registries like quay.io or registry.redhat.io, \
-rate limits, DNS resolution failures, temporary infrastructure issues)
+rate limits, DNS resolution failures, temporary infrastructure issues, \
+git push rejections due to non-fast-forward / concurrent pushes to a shared repository, \
+HTTP 400 errors when uploading packages to Pulp/PyPI repositories like packages.redhat.com)
 - "real": Genuine code or configuration problem that requires human attention \
 (compilation errors, test assertion failures, missing dependencies, security policy violations, \
 broken build scripts)

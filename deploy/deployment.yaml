@@ -13,10 +13,19 @@ spec:
     metadata:
       labels:
         app: calunga-release-watcher
+        paas.redhat.com/appcode: RHPI-001
     spec:
       containers:
         - name: controller
           image: quay.io/rhopp/calunga-release-watcher:latest
+          imagePullPolicy: IfNotPresent
+          command: ["kopf", "run"]
+          args:
+            - "--liveness=http://0.0.0.0:8080/healthz"
+            - "--namespace=$(TENANT_NAMESPACE)"
+            - "--namespace=$(RELEASE_NAMESPACE)"
+            - "-m"
+            - "calunga_release_watcher.handlers"
           envFrom:
             - configMapRef:
                 name: calunga-release-watcher-config
@@ -34,6 +43,12 @@ spec:
                   optional: true
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: /var/run/secrets/gcp/sa-key.json
+            - name: HTTPS_PROXY
+              value: "http://proxy.squi-001.prod.iad2.dc.redhat.com:3128"
+            - name: HTTP_PROXY
+              value: "http://proxy.squi-001.prod.iad2.dc.redhat.com:3128"
+            - name: NO_PROXY
+              value: ".svc,.cluster.local,10.0.0.0/8,172.0.0.0/8"
           volumeMounts:
             - name: gcp-sa-key
               mountPath: /var/run/secrets/gcp

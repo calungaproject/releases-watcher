@@ -113,6 +113,7 @@ def configure(settings: kopf.OperatorSettings, **_):
     settings.scanning.disabled = True
     settings.posting.enabled = False
     settings.peering.standalone = True
+    settings.networking.trust_env = True
     logger.info(
         "Starting controller — resume sync grace period: %ds. "
         "Events during this window will be processed silently.",
@@ -132,6 +133,7 @@ def login(**_):
             token=token,
             ca_path=None,
             insecure=True,
+            trust_env=True,
             priority=0,
         )
     return kopf.login_via_client(**_)
