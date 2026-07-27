@@ -16,6 +16,7 @@ from calunga_release_watcher.config import (
     RELEASE_PLAN,
     RETRY_CONFIDENCE_THRESHOLD,
     RETRY_ENABLED,
+    TENANT_NAMESPACE,
 )
 from calunga_release_watcher.k8s import get_k8s_client
 from calunga_release_watcher.tracker import PipelineInfo, PipelineState
@@ -189,7 +190,7 @@ def attempt_retry(
             if info.release_retry_count >= MAX_RETRIES and RETRY_ENABLED:
                 return False, f"⚠️ Max retries ({MAX_RETRIES}) exhausted for release — manual intervention required"
             return False, ""
-        name = retry_release(body, info.snapshot, info.namespace, info)
+        name = retry_release(body, info.snapshot, TENANT_NAMESPACE, info)
         if not name:
             return False, ""
         return True, f"\U0001f504 Retrying release — created {name} — attempt {info.release_retry_count}/{MAX_RETRIES}"
