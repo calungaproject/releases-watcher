@@ -51,4 +51,3 @@ LBL_ITS_RUN = "test.appstudio.openshift.io/run"
 # Release labels
 LBL_RELEASE_PLAN = "release.appstudio.openshift.io/releasePlan"
 LBL_RELEASE_SNAPSHOT = "release.appstudio.openshift.io/snapshot"
-LBL_AUTOMATED = "release.appstudio.openshift.io/automated"

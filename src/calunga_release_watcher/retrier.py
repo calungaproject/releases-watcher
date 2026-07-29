@@ -5,7 +5,6 @@ from kubernetes import client as k8s_client
 from calunga_release_watcher.analyzer import FailureAnalysis
 from calunga_release_watcher.config import (
     LBL_APPLICATION,
-    LBL_AUTOMATED,
     LBL_COMPONENT,
     LBL_ITS_RUN,
     LBL_RELEASE_PLAN,
@@ -104,7 +103,6 @@ def retry_release(
         LBL_COMPONENT: orig_labels.get(LBL_COMPONENT, ""),
         LBL_TEST_EVENT_TYPE: orig_labels.get(LBL_TEST_EVENT_TYPE, ""),
         LBL_TEST_SHA: orig_labels.get(LBL_TEST_SHA, ""),
-        LBL_AUTOMATED: "true",
         LBL_RELEASE_PLAN: RELEASE_PLAN,
         LBL_RELEASE_SNAPSHOT: snapshot_name,
     }

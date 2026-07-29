@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 tracker = PipelineTracker()
 
-SYNC_GRACE_PERIOD = 15
+SYNC_GRACE_PERIOD = 60
 
 
 def _in_namespace(ns: str):
