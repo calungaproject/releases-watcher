@@ -48,6 +48,24 @@ RETRYING_STATES = {
 
 TERMINAL_STATES = FAILURE_STATES | {PipelineState.RELEASED}
 
+# From a RETRYING state, block backward transitions to earlier pipeline stages.
+# RETRYING → FAILURE and RETRYING → RELEASED are always allowed.
+_RETRYING_BLOCKED_TRANSITIONS: dict[PipelineState, frozenset] = {
+    PipelineState.RELEASE_RETRYING: frozenset({
+        PipelineState.BUILD_RUNNING,
+        PipelineState.BUILD_SUCCEEDED,
+        PipelineState.SNAPSHOT_CREATED,
+        PipelineState.TESTING,
+        PipelineState.TESTS_PASSED,
+        PipelineState.RELEASING,
+    }),
+    PipelineState.TESTS_RETRYING: frozenset({
+        PipelineState.BUILD_RUNNING,
+        PipelineState.BUILD_SUCCEEDED,
+        PipelineState.SNAPSHOT_CREATED,
+    }),
+}
+
 
 @dataclass
 class PipelineInfo:
@@ -68,6 +86,7 @@ class PipelineInfo:
     test_retry_counts: dict[str, int] = field(default_factory=dict)
     release_retry_count: int = 0
     failure_thread_ts: str = ""
+    processed_failure_sources: set[str] = field(default_factory=set)
 
     @property
     def log_prefix(self) -> str:
@@ -219,7 +238,7 @@ class PipelineTracker:
             return
         if old_state in TERMINAL_STATES:
             return
-        if old_state in RETRYING_STATES and new_state in FAILURE_STATES:
+        if new_state in _RETRYING_BLOCKED_TRANSITIONS.get(old_state, frozenset()):
             return
         info.state = new_state
         info.last_updated = datetime.now(timezone.utc)
@@ -264,12 +283,15 @@ class PipelineTracker:
         elif status == "True":
             self._transition(info, PipelineState.BUILD_SUCCEEDED, f"Build PipelineRun succeeded: {name}")
         elif status == "False":
-            self._transition(
-                info,
-                PipelineState.BUILD_FAILED,
-                f"Build PipelineRun FAILED: {name} (reason={reason})",
-                body=body,
-            )
+            source_key = f"build:{name}"
+            if source_key not in info.processed_failure_sources:
+                info.processed_failure_sources.add(source_key)
+                self._transition(
+                    info,
+                    PipelineState.BUILD_FAILED,
+                    f"Build PipelineRun FAILED: {name} (reason={reason})",
+                    body=body,
+                )
 
     def on_snapshot(self, body: dict) -> None:
         sha = extract_sha(body)
@@ -286,7 +308,10 @@ class PipelineTracker:
         release_status, _ = get_named_condition(body, "AutoReleased")
 
         if test_status == "False":
-            self._transition(info, PipelineState.TESTS_FAILED, f"Tests failed (via Snapshot {name})", body=body)
+            source_key = f"snapshot:{name}"
+            if source_key not in info.processed_failure_sources:
+                info.processed_failure_sources.add(source_key)
+                self._transition(info, PipelineState.TESTS_FAILED, f"Tests failed (via Snapshot {name})", body=body)
         elif test_status == "True" and release_status == "True":
             pass
         elif test_status == "True":
@@ -351,12 +376,15 @@ class PipelineTracker:
         if released_status == "True":
             self._transition(info, PipelineState.RELEASED, f"Release succeeded: {name}")
         elif released_status == "False" and released_reason not in ("Progressing", "Running"):
-            self._transition(
-                info,
-                PipelineState.RELEASE_FAILED,
-                f"Release FAILED: {name} (reason={released_reason})",
-                body=body,
-            )
+            source_key = f"release:{name}"
+            if source_key not in info.processed_failure_sources:
+                info.processed_failure_sources.add(source_key)
+                self._transition(
+                    info,
+                    PipelineState.RELEASE_FAILED,
+                    f"Release FAILED: {name} (reason={released_reason})",
+                    body=body,
+                )
         else:
             self._transition(info, PipelineState.RELEASING, f"Release created: {name}")
 
@@ -389,9 +417,12 @@ class PipelineTracker:
                 f"Release PipelineRun succeeded: {name} — PIPELINE COMPLETE",
             )
         elif status == "False":
-            self._transition(
-                info,
-                PipelineState.RELEASE_FAILED,
-                f"Release PipelineRun FAILED: {name} (reason={reason})",
-                body=body,
-            )
+            source_key = f"plr:{namespace}/{name}"
+            if source_key not in info.processed_failure_sources:
+                info.processed_failure_sources.add(source_key)
+                self._transition(
+                    info,
+                    PipelineState.RELEASE_FAILED,
+                    f"Release PipelineRun FAILED: {name} (reason={reason})",
+                    body=body,
+                )
