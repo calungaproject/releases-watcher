@@ -5,6 +5,7 @@ from calunga_release_watcher.tracker import (
     PipelineInfo,
     PipelineState,
     PipelineTracker,
+    _fire_slack,
     _handle_failure,
     extract_package_title,
     extract_sha,
@@ -263,6 +264,16 @@ class TestPipelineTrackerSetLive:
 # ---------------------------------------------------------------------------
 
 
+class TestFireSlack:
+    @patch("calunga_release_watcher.tracker.threading.Thread")
+    def test_starts_daemon_thread(self, mock_thread_cls):
+        mock_thread = MagicMock()
+        mock_thread_cls.return_value = mock_thread
+        _fire_slack("hello", "ts123")
+        mock_thread_cls.assert_called_once()
+        mock_thread.start.assert_called_once()
+
+
 class TestOnBuildPipelineRun:
     @patch("calunga_release_watcher.tracker._handle_failure")
     def test_running(self, mock_handle):
@@ -300,6 +311,27 @@ class TestOnBuildPipelineRun:
         tracker.on_build_pipelinerun(body)
         assert len(tracker._pipelines) == 0
 
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_pruned_sha_is_noop(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        tracker._seen_shas.add(SHA)  # seen but pruned from _pipelines
+        tracker.on_build_pipelinerun(make_body(name="build-1"))
+        assert tracker.get(SHA) is None
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_failure_deduped_on_second_call(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        body = make_body(name="build-1", conditions=CONDITION_FAILED)
+        tracker.on_build_pipelinerun(body)
+        assert mock_handle.call_count == 1
+        # Simulate retry: unblock the terminal state
+        tracker.get(SHA).state = PipelineState.BUILD_RETRYING
+        # Same event replayed — dedup must suppress the second _handle_failure
+        tracker.on_build_pipelinerun(body)
+        assert mock_handle.call_count == 1
+
 
 class TestOnSnapshot:
     @patch("calunga_release_watcher.tracker._handle_failure")
@@ -333,6 +365,47 @@ class TestOnSnapshot:
         assert info.state == PipelineState.TESTS_FAILED
         mock_handle.assert_called_once()
 
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_no_sha_is_noop(self, mock_handle):
+        tracker = PipelineTracker()
+        body = make_body(kind="Snapshot")
+        body["metadata"]["labels"] = {}
+        tracker.on_snapshot(body)
+        assert len(tracker._pipelines) == 0
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_pruned_sha_is_noop(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        tracker._seen_shas.add(SHA)
+        tracker.on_snapshot(make_body(name="snap-1", kind="Snapshot"))
+        assert tracker.get(SHA) is None
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_auto_released_is_noop(self, mock_handle):
+        tracker = PipelineTracker()
+        body = make_body(name="snap-1", kind="Snapshot", conditions=[
+            {"type": "AppStudioTestSucceeded", "status": "True", "reason": "Passed"},
+            {"type": "AutoReleased", "status": "True", "reason": "Released"},
+        ])
+        tracker.on_snapshot(body)
+        # test_status=True AND release_status=True → pass (no transition)
+        info = tracker.get(SHA)
+        assert info.state == PipelineState.BUILD_RUNNING
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_failure_deduped_on_second_call(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        body = make_body(name="snap-1", kind="Snapshot", conditions=[
+            {"type": "AppStudioTestSucceeded", "status": "False", "reason": "TestFailed"},
+        ])
+        tracker.on_snapshot(body)
+        assert mock_handle.call_count == 1
+        tracker.get(SHA).state = PipelineState.TESTS_RETRYING
+        tracker.on_snapshot(body)
+        assert mock_handle.call_count == 1
+
 
 class TestOnTestPipelineRun:
     @patch("calunga_release_watcher.tracker._handle_failure")
@@ -358,6 +431,50 @@ class TestOnTestPipelineRun:
         info = tracker.get(SHA)
         assert "test-1" in info.test_pipelineruns
         assert info.test_pipelineruns["test-1"] == "True"
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_no_sha_is_noop(self, mock_handle):
+        tracker = PipelineTracker()
+        body = make_body(name="test-1")
+        body["metadata"]["labels"] = {}
+        tracker.on_test_pipelinerun(body)
+        assert len(tracker._pipelines) == 0
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_pruned_sha_is_noop(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        tracker._seen_shas.add(SHA)
+        tracker.on_test_pipelinerun(make_body(name="test-1"))
+        assert tracker.get(SHA) is None
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_test_passed_logs_when_live(self, mock_handle, caplog):
+        import logging
+        tracker = PipelineTracker()
+        tracker._live = True
+        body = make_body(
+            name="test-1",
+            labels={"test.appstudio.openshift.io/scenario": "wheel-check"},
+            conditions=CONDITION_SUCCEEDED,
+        )
+        with caplog.at_level(logging.INFO, logger="calunga_release_watcher.tracker"):
+            tracker.on_test_pipelinerun(body)
+        assert any("Test passed" in r.message for r in caplog.records)
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_test_failed_logs_warning_when_live(self, mock_handle, caplog):
+        import logging
+        tracker = PipelineTracker()
+        tracker._live = True
+        body = make_body(
+            name="test-1",
+            labels={"test.appstudio.openshift.io/scenario": "wheel-check"},
+            conditions=CONDITION_FAILED,
+        )
+        with caplog.at_level(logging.WARNING, logger="calunga_release_watcher.tracker"):
+            tracker.on_test_pipelinerun(body)
+        assert any("Test FAILED" in r.message for r in caplog.records)
 
 
 class TestOnRelease:
@@ -394,6 +511,45 @@ class TestOnRelease:
         assert info.state == PipelineState.RELEASE_FAILED
         mock_handle.assert_called_once()
 
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_no_sha_is_noop(self, mock_handle):
+        tracker = PipelineTracker()
+        body = make_body(name="rel-1", kind="Release")
+        body["metadata"]["labels"] = {}
+        tracker.on_release(body)
+        assert len(tracker._pipelines) == 0
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_pruned_sha_is_noop(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        tracker._seen_shas.add(SHA)
+        tracker.on_release(make_body(name="rel-1", kind="Release"))
+        assert tracker.get(SHA) is None
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_sets_pipelinerun_from_managed_processing(self, mock_handle):
+        tracker = PipelineTracker()
+        body = make_body(name="rel-1", kind="Release", extra_status={
+            "managedProcessing": {"pipelineRun": "rhtap-releng-tenant/managed-abc"},
+        })
+        tracker.on_release(body)
+        info = tracker.get(SHA)
+        assert info.release_pipelinerun == "rhtap-releng-tenant/managed-abc"
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_failure_deduped_on_second_call(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        body = make_body(name="rel-1", kind="Release", conditions=[
+            {"type": "Released", "status": "False", "reason": "Error"},
+        ])
+        tracker.on_release(body)
+        assert mock_handle.call_count == 1
+        tracker.get(SHA).state = PipelineState.RELEASE_RETRYING
+        tracker.on_release(body)
+        assert mock_handle.call_count == 1
+
 
 class TestOnReleasePipelineRun:
     @patch("calunga_release_watcher.tracker._handle_failure")
@@ -422,6 +578,49 @@ class TestOnReleasePipelineRun:
         info = tracker.get(SHA)
         assert info.state == PipelineState.RELEASE_FAILED
         mock_handle.assert_called_once()
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_no_sha_is_noop(self, mock_handle):
+        tracker = PipelineTracker()
+        body = make_body(name="managed-plr-1", namespace="rhtap-releng-tenant")
+        body["metadata"]["labels"] = {}
+        tracker.on_release_pipelinerun(body)
+        assert len(tracker._pipelines) == 0
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_pruned_sha_is_noop(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        tracker._seen_shas.add(SHA)
+        tracker.on_release_pipelinerun(
+            make_body(name="managed-plr-1", namespace="rhtap-releng-tenant")
+        )
+        assert tracker.get(SHA) is None
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_started_logs_when_live(self, mock_handle, caplog):
+        import logging
+        tracker = PipelineTracker()
+        tracker._live = True
+        body = make_body(name="managed-plr-1", namespace="rhtap-releng-tenant")
+        with caplog.at_level(logging.INFO, logger="calunga_release_watcher.tracker"):
+            tracker.on_release_pipelinerun(body)
+        assert any("Release PipelineRun started" in r.message for r in caplog.records)
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_failure_deduped_on_second_call(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        body = make_body(
+            name="managed-plr-1",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_FAILED,
+        )
+        tracker.on_release_pipelinerun(body)
+        assert mock_handle.call_count == 1
+        tracker.get(SHA).state = PipelineState.RELEASE_RETRYING
+        tracker.on_release_pipelinerun(body)
+        assert mock_handle.call_count == 1
 
 
 # ---------------------------------------------------------------------------

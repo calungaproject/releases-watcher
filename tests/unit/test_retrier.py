@@ -166,6 +166,59 @@ class TestAttemptRetry:
         assert "Max retries" in msg
         assert "manual intervention" in msg
 
+    @patch("calunga_release_watcher.retrier.RETRY_ENABLED", True)
+    @patch("calunga_release_watcher.retrier.RETRY_CONFIDENCE_THRESHOLD", "medium")
+    @patch("calunga_release_watcher.retrier.MAX_RETRIES", 1)
+    def test_test_failure_max_retries_exhausted(self):
+        info = make_pipeline_info(snapshot="snap-1")
+        info.test_retry_counts["wheel-check"] = 1
+        analysis = _make_analysis(failed_scenarios=["wheel-check"])
+        retried, msg = attempt_retry(analysis, PipelineState.TESTS_FAILED, {}, info)
+        assert retried is False
+        assert "Max retries" in msg
+        assert "tests" in msg
+
+    @patch("calunga_release_watcher.retrier.RETRY_ENABLED", True)
+    @patch("calunga_release_watcher.retrier.RETRY_CONFIDENCE_THRESHOLD", "medium")
+    @patch("calunga_release_watcher.retrier.MAX_RETRIES", 3)
+    @patch("calunga_release_watcher.retrier.retry_test_scenarios", return_value=[])
+    def test_test_failure_retry_returns_empty(self, mock_retry):
+        info = make_pipeline_info(snapshot="snap-1")
+        analysis = _make_analysis(failed_scenarios=["wheel-check"])
+        retried, msg = attempt_retry(analysis, PipelineState.TESTS_FAILED, {}, info)
+        assert retried is False
+        assert msg == ""
+
+    @patch("calunga_release_watcher.retrier.RETRY_ENABLED", True)
+    @patch("calunga_release_watcher.retrier.RETRY_CONFIDENCE_THRESHOLD", "medium")
+    @patch("calunga_release_watcher.retrier.MAX_RETRIES", 1)
+    def test_release_failure_max_retries_exhausted(self):
+        info = make_pipeline_info(snapshot="snap-1")
+        info.release_retry_count = 1
+        analysis = _make_analysis()
+        retried, msg = attempt_retry(analysis, PipelineState.RELEASE_FAILED, {}, info)
+        assert retried is False
+        assert "Max retries" in msg
+        assert "release" in msg
+
+    @patch("calunga_release_watcher.retrier.RETRY_ENABLED", True)
+    @patch("calunga_release_watcher.retrier.RETRY_CONFIDENCE_THRESHOLD", "medium")
+    @patch("calunga_release_watcher.retrier.MAX_RETRIES", 3)
+    @patch("calunga_release_watcher.retrier.retry_release", return_value=None)
+    def test_release_failure_retry_returns_none(self, mock_retry):
+        info = make_pipeline_info(snapshot="snap-1")
+        analysis = _make_analysis()
+        retried, msg = attempt_retry(analysis, PipelineState.RELEASE_FAILED, {}, info)
+        assert retried is False
+        assert msg == ""
+
+    def test_unknown_failure_state_returns_empty(self):
+        info = make_pipeline_info()
+        analysis = _make_analysis()
+        retried, msg = attempt_retry(analysis, PipelineState.BUILD_RUNNING, {}, info)
+        assert retried is False
+        assert msg == ""
+
 
 # ---------------------------------------------------------------------------
 # retry_test_scenarios (mocked k8s)
