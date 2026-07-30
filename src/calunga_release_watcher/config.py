@@ -3,6 +3,7 @@ import os
 TENANT_NAMESPACE = os.environ.get("TENANT_NAMESPACE", "calunga-tenant")
 RELEASE_NAMESPACE = os.environ.get("RELEASE_NAMESPACE", "rhtap-releng-tenant")
 APPLICATION = os.environ.get("APPLICATION", "calunga-v2-index-main")
+APPLICATIONS = {app.strip() for app in APPLICATION.split(",") if app.strip()}
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "")
@@ -13,7 +14,6 @@ STALL_TIMEOUT_MINUTES = int(os.environ.get("STALL_TIMEOUT_MINUTES", "30"))
 # Retry mechanism
 RETRY_ENABLED = os.environ.get("RETRY_ENABLED", "false").lower() == "true"
 RETRY_CONFIDENCE_THRESHOLD = os.environ.get("RETRY_CONFIDENCE_THRESHOLD", "medium")
-RELEASE_PLAN = os.environ.get("RELEASE_PLAN", "calunga")
 
 # AI failure analysis
 AI_ANALYSIS_ENABLED = os.environ.get("AI_ANALYSIS_ENABLED", "false").lower() == "true"
@@ -51,3 +51,4 @@ LBL_ITS_RUN = "test.appstudio.openshift.io/run"
 # Release labels
 LBL_RELEASE_PLAN = "release.appstudio.openshift.io/releasePlan"
 LBL_RELEASE_SNAPSHOT = "release.appstudio.openshift.io/snapshot"
+LBL_AUTOMATED = "release.appstudio.openshift.io/automated"

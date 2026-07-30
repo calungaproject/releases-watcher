@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-watcher
+spec:
+  template:
+    metadata:
+      labels:
+        paas.redhat.com/appcode: RHPI-001
+    spec:
+      containers:
+        - name: controller
+          resources:
+            requests:
+              memory: "512Mi"
+            limits:
+              memory: "1Gi"
+          env:
+            - name: K8S_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: calunga-release-watcher-secrets
+                  key: k8s-token
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: calunga-release-watcher-secrets
+                  key: slack-token
+                  optional: true
+      volumes:
+        - name: gcp-sa-key
+          secret:
+            secretName: calunga-release-watcher-secrets
+            items:
+              - key: gcp-sa-key
+                path: sa-key.json
+            optional: true

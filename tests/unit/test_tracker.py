@@ -7,15 +7,16 @@ from calunga_release_watcher.tracker import (
     PipelineTracker,
     _fire_slack,
     _handle_failure,
+    extract_git_info,
     extract_package_title,
-    extract_sha,
     extract_snapshot_name,
+    extract_tracking_key,
     get_condition_status,
     get_named_condition,
 )
 
 SHA = "abc1234567890def"
-SHA_SHORT = "abc1234"
+SHA_SHORT = "abc123456789"
 
 CONDITION_SUCCEEDED = [{"type": "Succeeded", "status": "True", "reason": "Completed", "message": ""}]
 CONDITION_FAILED = [{"type": "Succeeded", "status": "False", "reason": "Failed", "message": "step failed"}]
@@ -44,7 +45,7 @@ def make_body(name="test-plr-1", sha=SHA, kind="PipelineRun", namespace="calunga
 def make_pipeline_info(sha=SHA, state=PipelineState.BUILD_RUNNING, **kwargs):
     return PipelineInfo(
         sha=sha,
-        sha_short=sha[:7],
+        sha_short=sha[:12],
         package_title=kwargs.pop("package_title", "test-package"),
         state=state,
         namespace=kwargs.pop("namespace", "calunga-tenant"),
@@ -57,10 +58,10 @@ def make_pipeline_info(sha=SHA, state=PipelineState.BUILD_RUNNING, **kwargs):
 # ---------------------------------------------------------------------------
 
 
-class TestExtractSha:
+class TestExtractTrackingKey:
     def test_from_labels(self):
         body = make_body(sha="deadbeef1234")
-        assert extract_sha(body) == "deadbeef1234"
+        assert extract_tracking_key(body) == "deadbeef1234"
 
     def test_from_annotations(self):
         body = make_body()
@@ -68,15 +69,28 @@ class TestExtractSha:
         body["metadata"]["annotations"] = {
             "pac.test.appstudio.openshift.io/sha": "cafe1234"
         }
-        assert extract_sha(body) == "cafe1234"
+        assert extract_tracking_key(body) == "cafe1234"
 
     def test_missing(self):
         body = {"metadata": {"labels": {}, "annotations": {}}}
-        assert extract_sha(body) is None
+        assert extract_tracking_key(body) is None
 
     def test_empty_metadata(self):
         body = {"metadata": {}}
-        assert extract_sha(body) is None
+        assert extract_tracking_key(body) is None
+
+    def test_fallback_to_build_pipelinerun_label(self):
+        body = {"metadata": {"labels": {
+            "appstudio.openshift.io/build-pipelinerun": "build-plr-abc",
+        }, "annotations": {}}}
+        assert extract_tracking_key(body) == "build-plr-abc"
+
+    def test_sha_takes_precedence_over_build_plr(self):
+        body = {"metadata": {"labels": {
+            "pac.test.appstudio.openshift.io/sha": "sha-value",
+            "appstudio.openshift.io/build-pipelinerun": "build-plr-abc",
+        }, "annotations": {}}}
+        assert extract_tracking_key(body) == "sha-value"
 
 
 class TestExtractPackageTitle:
@@ -98,9 +112,81 @@ class TestExtractPackageTitle:
         })
         assert extract_package_title(body) == "First line"
 
-    def test_defaults_to_unknown(self):
-        body = make_body()
-        assert extract_package_title(body) == "unknown"
+    def test_fallback_to_image_param_tag(self):
+        body = {
+            "metadata": {"labels": {}, "annotations": {}},
+            "spec": {"params": [
+                {"name": "IMAGE", "value": "quay.io/org/image:v1.2.3"},
+            ]},
+        }
+        assert extract_package_title(body) == "v1.2.3"
+
+    def test_fallback_to_component_label(self):
+        body = {
+            "metadata": {
+                "name": "some-plr",
+                "labels": {"appstudio.openshift.io/component": "my-component"},
+                "annotations": {},
+            },
+        }
+        assert extract_package_title(body) == "my-component"
+
+    def test_fallback_to_resource_name(self):
+        body = {
+            "metadata": {"name": "my-pipeline-run", "labels": {}, "annotations": {}},
+        }
+        assert extract_package_title(body) == "my-pipeline-run"
+
+
+class TestExtractGitInfo:
+    def test_from_pipelinerun_results(self):
+        body = {
+            "metadata": {"labels": {}, "annotations": {}},
+            "status": {"results": [
+                {"name": "CHAINS-GIT_URL", "value": "https://github.com/org/repo"},
+                {"name": "CHAINS-GIT_COMMIT", "value": "abc1234567890"},
+            ]},
+        }
+        url, commit = extract_git_info(body)
+        assert url == "https://github.com/org/repo"
+        assert commit == "abc1234567890"
+
+    def test_from_snapshot_components(self):
+        body = {
+            "metadata": {"labels": {}, "annotations": {}},
+            "spec": {"components": [
+                {"source": {"git": {
+                    "url": "https://github.com/org/repo",
+                    "revision": "deadbeef",
+                }}},
+            ]},
+        }
+        url, commit = extract_git_info(body)
+        assert url == "https://github.com/org/repo"
+        assert commit == "deadbeef"
+
+    def test_pipelinerun_results_take_precedence(self):
+        body = {
+            "metadata": {"labels": {}, "annotations": {}},
+            "status": {"results": [
+                {"name": "CHAINS-GIT_URL", "value": "https://github.com/org/plr-repo"},
+                {"name": "CHAINS-GIT_COMMIT", "value": "plr-commit"},
+            ]},
+            "spec": {"components": [
+                {"source": {"git": {
+                    "url": "https://github.com/org/snap-repo",
+                    "revision": "snap-commit",
+                }}},
+            ]},
+        }
+        url, commit = extract_git_info(body)
+        assert url == "https://github.com/org/plr-repo"
+        assert commit == "plr-commit"
+
+    def test_empty_body(self):
+        url, commit = extract_git_info({})
+        assert url == ""
+        assert commit == ""
 
 
 class TestExtractSnapshotName:
@@ -258,6 +344,19 @@ class TestPipelineTrackerSetLive:
         assert "sha2" not in tracker._pipelines
         assert "sha3" in tracker._pipelines
 
+    def test_prunes_snapshot_index(self):
+        tracker = PipelineTracker()
+        body_active = make_body(name="plr-active", sha="active-sha")
+        info = tracker.get_or_create("active-sha", body_active)
+        info.build_pipelinerun = "plr-active"
+        tracker._snapshot_index["snap-active"] = "active-sha"
+        tracker._snapshot_index["snap-stale"] = "gone-sha"
+
+        tracker.set_live()
+
+        assert "snap-active" in tracker._snapshot_index
+        assert "snap-stale" not in tracker._snapshot_index
+
 
 # ---------------------------------------------------------------------------
 # Event handlers
@@ -304,18 +403,20 @@ class TestOnBuildPipelineRun:
         mock_handle.assert_called_once()
 
     @patch("calunga_release_watcher.tracker._handle_failure")
-    def test_no_sha_is_noop(self, mock_handle):
+    def test_no_sha_uses_plr_name_as_key(self, mock_handle):
         tracker = PipelineTracker()
-        body = make_body()
+        body = make_body(name="my-build-plr")
         body["metadata"]["labels"] = {}
         tracker.on_build_pipelinerun(body)
-        assert len(tracker._pipelines) == 0
+        info = tracker.get("my-build-plr")
+        assert info is not None
+        assert info.build_pipelinerun == "my-build-plr"
 
     @patch("calunga_release_watcher.tracker._handle_failure")
     def test_pruned_sha_is_noop(self, mock_handle):
         tracker = PipelineTracker()
         tracker._live = True
-        tracker._seen_shas.add(SHA)  # seen but pruned from _pipelines
+        tracker._seen_keys.add(SHA)  # seen but pruned from _pipelines
         tracker.on_build_pipelinerun(make_body(name="build-1"))
         assert tracker.get(SHA) is None
 
@@ -332,6 +433,20 @@ class TestOnBuildPipelineRun:
         tracker.on_build_pipelinerun(body)
         assert mock_handle.call_count == 1
 
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_succeeded_populates_git_info(self, mock_handle):
+        tracker = PipelineTracker()
+        body = make_body(name="build-1", conditions=CONDITION_SUCCEEDED, extra_status={
+            "results": [
+                {"name": "CHAINS-GIT_URL", "value": "https://github.com/org/repo"},
+                {"name": "CHAINS-GIT_COMMIT", "value": "abc123"},
+            ]
+        })
+        tracker.on_build_pipelinerun(body)
+        info = tracker.get(SHA)
+        assert info.git_url == "https://github.com/org/repo"
+        assert info.git_commit == "abc123"
+
 
 class TestOnSnapshot:
     @patch("calunga_release_watcher.tracker._handle_failure")
@@ -342,6 +457,13 @@ class TestOnSnapshot:
         info = tracker.get(SHA)
         assert info.state == PipelineState.SNAPSHOT_CREATED
         assert info.snapshot == "snap-1"
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_snapshot_populates_index(self, mock_handle):
+        tracker = PipelineTracker()
+        body = make_body(name="snap-1", kind="Snapshot")
+        tracker.on_snapshot(body)
+        assert tracker._snapshot_index.get("snap-1") == SHA
 
     @patch("calunga_release_watcher.tracker._handle_failure")
     def test_tests_passed(self, mock_handle):
@@ -377,7 +499,7 @@ class TestOnSnapshot:
     def test_pruned_sha_is_noop(self, mock_handle):
         tracker = PipelineTracker()
         tracker._live = True
-        tracker._seen_shas.add(SHA)
+        tracker._seen_keys.add(SHA)
         tracker.on_snapshot(make_body(name="snap-1", kind="Snapshot"))
         assert tracker.get(SHA) is None
 
@@ -444,7 +566,7 @@ class TestOnTestPipelineRun:
     def test_pruned_sha_is_noop(self, mock_handle):
         tracker = PipelineTracker()
         tracker._live = True
-        tracker._seen_shas.add(SHA)
+        tracker._seen_keys.add(SHA)
         tracker.on_test_pipelinerun(make_body(name="test-1"))
         assert tracker.get(SHA) is None
 
@@ -523,7 +645,7 @@ class TestOnRelease:
     def test_pruned_sha_is_noop(self, mock_handle):
         tracker = PipelineTracker()
         tracker._live = True
-        tracker._seen_shas.add(SHA)
+        tracker._seen_keys.add(SHA)
         tracker.on_release(make_body(name="rel-1", kind="Release"))
         assert tracker.get(SHA) is None
 
@@ -549,6 +671,39 @@ class TestOnRelease:
         tracker.get(SHA).state = PipelineState.RELEASE_RETRYING
         tracker.on_release(body)
         assert mock_handle.call_count == 1
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_release_found_via_snapshot_index(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        tracker._seen_keys.add("build-plr-name")
+        tracker._pipelines["build-plr-name"] = PipelineInfo(
+            sha="build-plr-name",
+            sha_short="build-plr-n",
+            package_title="pnc-import",
+            state=PipelineState.RELEASING,
+            namespace="lightwell-poc-tenant",
+            build_pipelinerun="build-plr-name",
+        )
+        tracker._snapshot_index["snap-xyz"] = "build-plr-name"
+
+        body = {
+            "metadata": {
+                "name": "rel-2",
+                "namespace": "lightwell-poc-tenant",
+                "labels": {
+                    "release.appstudio.openshift.io/snapshot": "snap-xyz",
+                },
+                "annotations": {},
+            },
+            "status": {"conditions": [
+                {"type": "Released", "status": "True", "reason": "Succeeded"},
+            ]},
+        }
+        tracker.on_release(body)
+        info = tracker._pipelines.get("build-plr-name")
+        assert info is not None
+        assert info.state == PipelineState.RELEASED
 
 
 class TestOnReleasePipelineRun:
@@ -591,7 +746,7 @@ class TestOnReleasePipelineRun:
     def test_pruned_sha_is_noop(self, mock_handle):
         tracker = PipelineTracker()
         tracker._live = True
-        tracker._seen_shas.add(SHA)
+        tracker._seen_keys.add(SHA)
         tracker.on_release_pipelinerun(
             make_body(name="managed-plr-1", namespace="rhtap-releng-tenant")
         )
@@ -621,6 +776,99 @@ class TestOnReleasePipelineRun:
         tracker.get(SHA).state = PipelineState.RELEASE_RETRYING
         tracker.on_release_pipelinerun(body)
         assert mock_handle.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Non-PAC (pnc-import style) flow
+# ---------------------------------------------------------------------------
+
+
+class TestNonPacFlow:
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_full_non_pac_flow_via_snapshot_index(self, mock_handle):
+        """
+        pnc-import has no PAC labels. Build PLR is tracked under its own name.
+        Snapshot links back via _snapshot_index. Release succeeds.
+        """
+        tracker = PipelineTracker()
+        tracker._live = True
+
+        build_body = {
+            "metadata": {
+                "name": "pnc-import-build-abc",
+                "namespace": "lightwell-poc-tenant",
+                "labels": {"appstudio.openshift.io/application": "pnc-import"},
+                "annotations": {},
+            },
+            "status": {"conditions": CONDITION_SUCCEEDED},
+        }
+        tracker.on_build_pipelinerun(build_body)
+        info = tracker._pipelines.get("pnc-import-build-abc")
+        assert info is not None
+        assert info.state == PipelineState.BUILD_SUCCEEDED
+
+        snap_body = {
+            "metadata": {
+                "name": "snap-pnc-123",
+                "namespace": "lightwell-poc-tenant",
+                "labels": {
+                    "appstudio.openshift.io/build-pipelinerun": "pnc-import-build-abc",
+                },
+                "annotations": {},
+            },
+            "status": {},
+        }
+        tracker.on_snapshot(snap_body)
+        assert tracker._snapshot_index.get("snap-pnc-123") == "pnc-import-build-abc"
+        assert info.snapshot == "snap-pnc-123"
+
+        release_body = {
+            "metadata": {
+                "name": "rel-pnc-1",
+                "namespace": "lightwell-poc-tenant",
+                "labels": {
+                    "release.appstudio.openshift.io/snapshot": "snap-pnc-123",
+                },
+                "annotations": {},
+            },
+            "status": {"conditions": [
+                {"type": "Released", "status": "True", "reason": "Succeeded"},
+            ]},
+        }
+        tracker.on_release(release_body)
+        assert info.state == PipelineState.RELEASED
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_release_pipelinerun_found_via_snapshot_label(self, mock_handle):
+        """Release PLR carries snapshot label — resolved via _snapshot_index."""
+        tracker = PipelineTracker()
+        tracker._live = True
+        tracker._pipelines["build-plr-xyz"] = PipelineInfo(
+            sha="build-plr-xyz",
+            sha_short="build-plr-x",
+            package_title="pnc-import",
+            state=PipelineState.RELEASING,
+            namespace="lightwell-poc-tenant",
+            build_pipelinerun="build-plr-xyz",
+            snapshot="snap-abc",
+        )
+        tracker._snapshot_index["snap-abc"] = "build-plr-xyz"
+        tracker._seen_keys.add("build-plr-xyz")
+
+        plr_body = {
+            "metadata": {
+                "name": "managed-plr-1",
+                "namespace": "rhtap-releng-tenant",
+                "labels": {
+                    "appstudio.openshift.io/snapshot": "snap-abc",
+                },
+                "annotations": {},
+            },
+            "status": {"conditions": CONDITION_SUCCEEDED},
+        }
+        tracker.on_release_pipelinerun(plr_body)
+        info = tracker._pipelines["build-plr-xyz"]
+        assert info.state == PipelineState.RELEASED
 
 
 # ---------------------------------------------------------------------------

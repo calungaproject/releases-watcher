@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from calunga_release_watcher.analyzer import FailureAnalysis
+from calunga_release_watcher.config import LBL_RELEASE_PLAN
 from calunga_release_watcher.retrier import (
     _meets_confidence_threshold,
     attempt_retry,
@@ -16,7 +17,7 @@ SHA = "abc1234567890def"
 def make_pipeline_info(sha=SHA, state=PipelineState.BUILD_RUNNING, **kwargs):
     return PipelineInfo(
         sha=sha,
-        sha_short=sha[:7],
+        sha_short=sha[:12],
         package_title=kwargs.pop("package_title", "test-package"),
         state=state,
         namespace=kwargs.pop("namespace", "calunga-tenant"),
@@ -278,8 +279,7 @@ class TestRetryTestScenarios:
 class TestRetryRelease:
     @patch("calunga_release_watcher.retrier.get_k8s_client")
     @patch("calunga_release_watcher.retrier.k8s_client")
-    @patch("calunga_release_watcher.retrier.RELEASE_PLAN", "calunga")
-    def test_creates_release(self, mock_k8s_mod, mock_get_client):
+    def test_creates_release_with_plan_from_original(self, mock_k8s_mod, mock_get_client):
         mock_api = MagicMock()
         mock_k8s_mod.CustomObjectsApi.return_value = mock_api
         mock_api.create_namespaced_custom_object.return_value = {
@@ -291,7 +291,7 @@ class TestRetryRelease:
                 "labels": {
                     "appstudio.openshift.io/application": "my-app",
                     "appstudio.openshift.io/component": "my-comp",
-                    "pac.test.appstudio.openshift.io/sha": "abc123",
+                    LBL_RELEASE_PLAN: "my-release-plan",
                 },
             },
         }
@@ -302,7 +302,14 @@ class TestRetryRelease:
 
         create_body = mock_api.create_namespaced_custom_object.call_args[1]["body"]
         assert create_body["spec"]["snapshot"] == "snap-1"
-        assert create_body["spec"]["releasePlan"] == "calunga"
+        assert create_body["spec"]["releasePlan"] == "my-release-plan"
+        assert create_body["metadata"]["labels"][LBL_RELEASE_PLAN] == "my-release-plan"
+
+    def test_no_release_plan_label_returns_none(self):
+        info = make_pipeline_info()
+        result = retry_release({"metadata": {"labels": {}}}, "snap-1", "ns", info)
+        assert result is None
+        assert info.release_retry_count == 0
 
     @patch("calunga_release_watcher.retrier.get_k8s_client")
     @patch("calunga_release_watcher.retrier.k8s_client")
@@ -313,7 +320,7 @@ class TestRetryRelease:
             "metadata": {"name": "retry-1"},
         }
 
-        original_body = {"metadata": {"labels": {}}}
+        original_body = {"metadata": {"labels": {LBL_RELEASE_PLAN: "some-plan"}}}
         info = make_pipeline_info()
         retry_release(original_body, "snap-1", "ns", info)
 
@@ -328,6 +335,7 @@ class TestRetryRelease:
         mock_k8s_mod.CustomObjectsApi.return_value = mock_api
         mock_api.create_namespaced_custom_object.side_effect = Exception("conflict")
 
+        original_body = {"metadata": {"labels": {LBL_RELEASE_PLAN: "some-plan"}}}
         info = make_pipeline_info()
-        result = retry_release({}, "snap-1", "ns", info)
+        result = retry_release(original_body, "snap-1", "ns", info)
         assert result is None

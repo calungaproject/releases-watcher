@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-watcher-config
+data:
+  RELEASE_NAMESPACE: rhtap-releng-tenant
+  K8S_API_URL: ""
+  SLACK_CHANNEL: ""
+  AI_ANALYSIS_ENABLED: "true"
+  RETRY_ENABLED: "false"
+  RETRY_CONFIDENCE_THRESHOLD: "medium"
+  GOOGLE_CLOUD_PROJECT: ""
+  GOOGLE_CLOUD_REGION: "global"
+  AI_MODEL: "claude-haiku-4-5"
+  AI_MAX_LOG_LINES: "200"
+  AI_TIMEOUT_SECONDS: "30"

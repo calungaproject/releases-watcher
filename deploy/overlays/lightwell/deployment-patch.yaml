@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-watcher
+spec:
+  template:
+    spec:
+      containers:
+        - name: controller
+          env:
+            - name: K8S_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lightwell-release-watcher-secret
+                  key: k8s-token
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lightwell-release-watcher-secret
+                  key: slack-token
+                  optional: true
+            - name: NO_PROXY
+              value: ".svc,.cluster.local,10.0.0.0/8,172.0.0.0/8,api.stone-prod-p01.wcfb.p1.openshiftapps.com"
+      volumes:
+        - name: gcp-sa-key
+          secret:
+            secretName: lightwell-release-watcher-secret
+            items:
+              - key: gcp-sa-key
+                path: sa-key.json
+            optional: true

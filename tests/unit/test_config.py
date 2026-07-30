@@ -3,6 +3,7 @@ import importlib
 
 def test_default_values(monkeypatch):
     monkeypatch.delenv("TENANT_NAMESPACE", raising=False)
+    monkeypatch.delenv("APPLICATION", raising=False)
     monkeypatch.delenv("MAX_RETRIES", raising=False)
     monkeypatch.delenv("AI_ANALYSIS_ENABLED", raising=False)
     monkeypatch.delenv("RETRY_ENABLED", raising=False)
@@ -12,6 +13,8 @@ def test_default_values(monkeypatch):
     importlib.reload(config)
 
     assert config.TENANT_NAMESPACE == "calunga-tenant"
+    assert config.APPLICATION == "calunga-v2-index-main"
+    assert config.APPLICATIONS == {"calunga-v2-index-main"}
     assert config.MAX_RETRIES == 3
     assert config.AI_ANALYSIS_ENABLED is False
     assert config.RETRY_ENABLED is False
@@ -27,6 +30,16 @@ def test_env_override_strings(monkeypatch):
 
     assert config.TENANT_NAMESPACE == "custom-ns"
     assert config.APPLICATION == "my-app"
+    assert config.APPLICATIONS == {"my-app"}
+
+
+def test_comma_separated_applications(monkeypatch):
+    monkeypatch.setenv("APPLICATION", "pnc-import, pnc-import-remediated , other-app")
+
+    import calunga_release_watcher.config as config
+    importlib.reload(config)
+
+    assert config.APPLICATIONS == {"pnc-import", "pnc-import-remediated", "other-app"}
 
 
 def test_env_override_int(monkeypatch):

@@ -1,23 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: calunga-release-watcher
+  name: release-watcher
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app: calunga-release-watcher
+      app: release-watcher
   template:
     metadata:
       labels:
-        app: calunga-release-watcher
-        paas.redhat.com/appcode: RHPI-001
+        app: release-watcher
     spec:
       containers:
         - name: controller
-          image: quay.io/calungaproject/releases-watcher:f657c40
+          image: quay.io/calungaproject/releases-watcher:latest
           imagePullPolicy: IfNotPresent
           command: ["kopf", "run"]
           args:
@@ -28,17 +27,17 @@ spec:
             - "calunga_release_watcher.handlers"
           envFrom:
             - configMapRef:
-                name: calunga-release-watcher-config
+                name: release-watcher-config
           env:
             - name: K8S_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: calunga-release-watcher-secrets
+                  name: release-watcher-secret
                   key: k8s-token
             - name: SLACK_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: calunga-release-watcher-secrets
+                  name: release-watcher-secret
                   key: slack-token
                   optional: true
             - name: GOOGLE_APPLICATION_CREDENTIALS
@@ -61,15 +60,15 @@ spec:
             periodSeconds: 30
           resources:
             requests:
-              memory: "512Mi"
+              memory: "256Mi"
               cpu: "100m"
             limits:
-              memory: "1Gi"
+              memory: "512Mi"
               cpu: "500m"
       volumes:
         - name: gcp-sa-key
           secret:
-            secretName: calunga-release-watcher-secrets
+            secretName: release-watcher-secret
             items:
               - key: gcp-sa-key
                 path: sa-key.json

@@ -5,14 +5,12 @@ from kubernetes import client as k8s_client
 from calunga_release_watcher.analyzer import FailureAnalysis
 from calunga_release_watcher.config import (
     LBL_APPLICATION,
+    LBL_AUTOMATED,
     LBL_COMPONENT,
     LBL_ITS_RUN,
     LBL_RELEASE_PLAN,
     LBL_RELEASE_SNAPSHOT,
-    LBL_TEST_EVENT_TYPE,
-    LBL_TEST_SHA,
     MAX_RETRIES,
-    RELEASE_PLAN,
     RETRY_CONFIDENCE_THRESHOLD,
     RETRY_ENABLED,
     TENANT_NAMESPACE,
@@ -97,13 +95,20 @@ def retry_release(
     info: PipelineInfo,
 ) -> str | None:
     orig_labels = original_release_body.get("metadata", {}).get("labels", {})
+    release_plan = orig_labels.get(LBL_RELEASE_PLAN)
+    if not release_plan:
+        logger.error(
+            "%s Original release has no %s label, cannot determine retry plan",
+            info.log_prefix,
+            LBL_RELEASE_PLAN,
+        )
+        return None
 
     labels = {
         LBL_APPLICATION: orig_labels.get(LBL_APPLICATION, ""),
         LBL_COMPONENT: orig_labels.get(LBL_COMPONENT, ""),
-        LBL_TEST_EVENT_TYPE: orig_labels.get(LBL_TEST_EVENT_TYPE, ""),
-        LBL_TEST_SHA: orig_labels.get(LBL_TEST_SHA, ""),
-        LBL_RELEASE_PLAN: RELEASE_PLAN,
+        LBL_AUTOMATED: "true",
+        LBL_RELEASE_PLAN: release_plan,
         LBL_RELEASE_SNAPSHOT: snapshot_name,
     }
     labels = {k: v for k, v in labels.items() if v}
@@ -118,7 +123,7 @@ def retry_release(
         },
         "spec": {
             "snapshot": snapshot_name,
-            "releasePlan": RELEASE_PLAN,
+            "releasePlan": release_plan,
         },
     }
 

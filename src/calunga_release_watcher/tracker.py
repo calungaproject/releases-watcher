@@ -9,7 +9,10 @@ from calunga_release_watcher.config import (
     ANN_BUILD_SHA_TITLE,
     ANN_TEST_SHA,
     ANN_TEST_SHA_TITLE,
+    LBL_BUILD_PLR,
     LBL_BUILD_SHA,
+    LBL_COMPONENT,
+    LBL_RELEASE_SNAPSHOT,
     LBL_SNAPSHOT,
     LBL_TEST_SHA,
 )
@@ -87,16 +90,35 @@ class PipelineInfo:
     release_retry_count: int = 0
     failure_thread_ts: str = ""
     processed_failure_sources: set[str] = field(default_factory=set)
+    git_url: str = ""
+    git_commit: str = ""
+
+    @property
+    def git_commit_short(self) -> str:
+        return self.git_commit[:7] if self.git_commit else ""
 
     @property
     def log_prefix(self) -> str:
-        return f"[{self.package_title} sha={self.sha_short}]"
+        if self.git_commit:
+            return f"[{self.package_title} commit={self.git_commit_short}]"
+        return f"[{self.package_title} key={self.sha_short}]"
+
+    @property
+    def git_summary(self) -> str:
+        if self.git_url and self.git_commit:
+            return f"{self.git_url} @ {self.git_commit_short}"
+        if self.git_commit:
+            return self.git_commit_short
+        return self.sha_short
 
 
-def extract_sha(body: dict) -> str | None:
+def extract_tracking_key(body: dict) -> str | None:
     labels = body.get("metadata", {}).get("labels", {})
     annotations = body.get("metadata", {}).get("annotations", {})
-    return labels.get(LBL_TEST_SHA) or labels.get(LBL_BUILD_SHA) or annotations.get(ANN_TEST_SHA)
+    sha = labels.get(LBL_TEST_SHA) or labels.get(LBL_BUILD_SHA) or annotations.get(ANN_TEST_SHA)
+    if sha:
+        return sha
+    return labels.get(LBL_BUILD_PLR)
 
 
 def extract_package_title(body: dict) -> str:
@@ -110,7 +132,31 @@ def extract_package_title(body: dict) -> str:
     title = title.split("\n")[0]
     if title.startswith("Automatic build "):
         title = title[len("Automatic build "):]
-    return title or "unknown"
+    if title:
+        return title
+    for p in body.get("spec", {}).get("params", []):
+        if p.get("name") == "IMAGE":
+            image = p.get("value", "")
+            if ":" in image:
+                return image.rsplit(":", 1)[-1].split("@")[0]
+    return labels.get(LBL_COMPONENT) or body.get("metadata", {}).get("name", "unknown")
+
+
+def extract_git_info(body: dict) -> tuple[str, str]:
+    url = ""
+    commit = ""
+    for r in body.get("status", {}).get("results", []):
+        if r.get("name") == "CHAINS-GIT_URL":
+            url = r.get("value", "")
+        elif r.get("name") == "CHAINS-GIT_COMMIT":
+            commit = r.get("value", "")
+    if url and commit:
+        return url, commit
+    for comp in body.get("spec", {}).get("components", []):
+        git = comp.get("source", {}).get("git", {})
+        if git.get("url") and git.get("revision"):
+            return git["url"], git["revision"]
+    return url, commit
 
 
 def extract_snapshot_name(body: dict) -> str:
@@ -153,7 +199,7 @@ def _handle_failure(
             except Exception:
                 logger.exception("%s AI analysis failed", info.log_prefix)
 
-        slack_msg = f"❌ {info.package_title} (sha={info.sha_short}) — {detail}"
+        slack_msg = f"❌ {info.package_title} ({info.git_summary}) — {detail}"
         if analysis:
             slack_msg += format_analysis(analysis)
         ts = send_slack_sync(slack_msg)
@@ -182,7 +228,8 @@ def _handle_failure(
 class PipelineTracker:
     def __init__(self) -> None:
         self._pipelines: dict[str, PipelineInfo] = {}
-        self._seen_shas: set[str] = set()
+        self._snapshot_index: dict[str, str] = {}
+        self._seen_keys: set[str] = set()
         self._live = False
 
     def set_live(self) -> None:
@@ -193,8 +240,13 @@ class PipelineTracker:
             if p.state not in TERMINAL_STATES and not p.build_pipelinerun
         )
         self._pipelines = {
-            sha: p for sha, p in self._pipelines.items()
+            key: p for key, p in self._pipelines.items()
             if p.state not in TERMINAL_STATES and p.build_pipelinerun
+        }
+        active_keys = set(self._pipelines.keys())
+        self._snapshot_index = {
+            snap: key for snap, key in self._snapshot_index.items()
+            if key in active_keys
         }
         watching = len(self._pipelines)
         logger.info(
@@ -213,21 +265,21 @@ class PipelineTracker:
             )
         self._live = True
 
-    def get_or_create(self, sha: str, body: dict) -> PipelineInfo | None:
-        if sha in self._pipelines:
-            return self._pipelines[sha]
-        if self._live and sha in self._seen_shas:
+    def get_or_create(self, key: str, body: dict) -> PipelineInfo | None:
+        if key in self._pipelines:
+            return self._pipelines[key]
+        if self._live and key in self._seen_keys:
             return None
-        self._seen_shas.add(sha)
-        self._pipelines[sha] = PipelineInfo(
-            sha=sha,
-            sha_short=sha[:7],
+        self._seen_keys.add(key)
+        self._pipelines[key] = PipelineInfo(
+            sha=key,
+            sha_short=key[:12],
             package_title=extract_package_title(body),
         )
-        return self._pipelines[sha]
+        return self._pipelines[key]
 
-    def get(self, sha: str) -> PipelineInfo | None:
-        return self._pipelines.get(sha)
+    def get(self, key: str) -> PipelineInfo | None:
+        return self._pipelines.get(key)
 
     def _transition(
         self, info: PipelineInfo, new_state: PipelineState,
@@ -256,7 +308,7 @@ class PipelineTracker:
         elif new_state == PipelineState.RELEASED:
             logger.info(msg)
             release_msg = (
-                f"✅ {info.package_title} (sha={info.sha_short}) — pipeline complete. "
+                f"✅ {info.package_title} ({info.git_summary}) — pipeline complete. "
                 f"Released via {info.release_pipelinerun}."
             )
             if info.failure_thread_ts:
@@ -267,12 +319,10 @@ class PipelineTracker:
             logger.info(msg)
 
     def on_build_pipelinerun(self, body: dict) -> None:
-        sha = extract_sha(body)
-        if not sha:
-            return
         name = body["metadata"]["name"]
+        key = extract_tracking_key(body) or name
         status, reason = get_condition_status(body)
-        info = self.get_or_create(sha, body)
+        info = self.get_or_create(key, body)
         if info is None:
             return
         info.build_pipelinerun = name
@@ -281,6 +331,11 @@ class PipelineTracker:
         if status is None:
             self._transition(info, PipelineState.BUILD_RUNNING, f"Build PipelineRun started: {name}")
         elif status == "True":
+            url, commit = extract_git_info(body)
+            if url:
+                info.git_url = url
+            if commit:
+                info.git_commit = commit
             self._transition(info, PipelineState.BUILD_SUCCEEDED, f"Build PipelineRun succeeded: {name}")
         elif status == "False":
             source_key = f"build:{name}"
@@ -294,15 +349,23 @@ class PipelineTracker:
                 )
 
     def on_snapshot(self, body: dict) -> None:
-        sha = extract_sha(body)
-        if not sha:
+        labels = body.get("metadata", {}).get("labels", {})
+        key = extract_tracking_key(body) or labels.get(LBL_BUILD_PLR)
+        if not key:
             return
         name = body["metadata"]["name"]
-        info = self.get_or_create(sha, body)
+        info = self.get_or_create(key, body)
         if info is None:
             return
         info.snapshot = name
         info.namespace = body["metadata"]["namespace"]
+        self._snapshot_index[name] = key
+        if not info.git_url or not info.git_commit:
+            url, commit = extract_git_info(body)
+            if url:
+                info.git_url = url
+            if commit:
+                info.git_commit = commit
 
         test_status, _ = get_named_condition(body, "AppStudioTestSucceeded")
         release_status, _ = get_named_condition(body, "AutoReleased")
@@ -320,15 +383,15 @@ class PipelineTracker:
             self._transition(info, PipelineState.SNAPSHOT_CREATED, f"Snapshot created: {name}")
 
     def on_test_pipelinerun(self, body: dict) -> None:
-        sha = extract_sha(body)
-        if not sha:
+        key = extract_tracking_key(body)
+        if not key:
             return
         name = body["metadata"]["name"]
         labels = body.get("metadata", {}).get("labels", {})
         scenario = labels.get("test.appstudio.openshift.io/scenario", name)
         status, reason = get_condition_status(body)
 
-        info = self.get_or_create(sha, body)
+        info = self.get_or_create(key, body)
         if info is None:
             return
         prev_status = info.test_pipelineruns.get(name)
@@ -355,11 +418,15 @@ class PipelineTracker:
             )
 
     def on_release(self, body: dict) -> None:
-        sha = extract_sha(body)
-        if not sha:
+        labels = body.get("metadata", {}).get("labels", {})
+        key = extract_tracking_key(body)
+        if not key:
+            snapshot_name = labels.get(LBL_RELEASE_SNAPSHOT, "")
+            key = self._snapshot_index.get(snapshot_name)
+        if not key:
             return
         name = body["metadata"]["name"]
-        info = self.get_or_create(sha, body)
+        info = self.get_or_create(key, body)
         if info is None:
             return
         info.release = name
@@ -389,14 +456,18 @@ class PipelineTracker:
             self._transition(info, PipelineState.RELEASING, f"Release created: {name}")
 
     def on_release_pipelinerun(self, body: dict) -> None:
-        sha = extract_sha(body)
-        if not sha:
+        labels = body.get("metadata", {}).get("labels", {})
+        key = extract_tracking_key(body)
+        if not key:
+            snapshot_name = labels.get(LBL_SNAPSHOT, "")
+            key = self._snapshot_index.get(snapshot_name)
+        if not key:
             return
         name = body["metadata"]["name"]
         namespace = body["metadata"]["namespace"]
         status, reason = get_condition_status(body)
 
-        info = self.get_or_create(sha, body)
+        info = self.get_or_create(key, body)
         if info is None:
             return
         already_tracked = info.release_pipelinerun == f"{namespace}/{name}"

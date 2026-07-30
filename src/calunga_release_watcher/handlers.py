@@ -6,10 +6,8 @@ import time
 import kopf
 
 from calunga_release_watcher.config import (
-    APPLICATION,
+    APPLICATIONS,
     LBL_APPLICATION,
-    LBL_BUILD_EVENT_TYPE,
-    LBL_TEST_EVENT_TYPE,
     LBL_PIPELINE_TYPE,
     LBL_RELEASE_NS,
     RELEASE_NAMESPACE,
@@ -37,6 +35,11 @@ def _in_namespace(ns: str):
     return lambda namespace, **_: namespace == ns
 
 
+def _app_matches(body: dict) -> bool:
+    labels = body.get("metadata", {}).get("labels", {})
+    return labels.get(LBL_APPLICATION) in APPLICATIONS
+
+
 def _delayed_set_live():
     time.sleep(SYNC_GRACE_PERIOD)
     tracker.set_live()
@@ -45,44 +48,48 @@ def _delayed_set_live():
 # ---------------------------------------------------------------------------
 # Build PipelineRuns
 # ---------------------------------------------------------------------------
-BUILD_FILTER = {LBL_PIPELINE_TYPE: "build", LBL_APPLICATION: APPLICATION, LBL_BUILD_EVENT_TYPE: "push"}
+BUILD_FILTER = {LBL_PIPELINE_TYPE: "build"}
 
 
 @kopf.on.event("tekton.dev", "v1", "pipelineruns", labels=BUILD_FILTER, when=_in_namespace(TENANT_NAMESPACE))
 def on_build_pipelinerun(body, **_):
+    if not _app_matches(body):
+        return
     tracker.on_build_pipelinerun(body)
 
 
 # ---------------------------------------------------------------------------
 # Test PipelineRuns
 # ---------------------------------------------------------------------------
-TEST_FILTER = {LBL_PIPELINE_TYPE: "test", LBL_APPLICATION: APPLICATION, LBL_TEST_EVENT_TYPE: "push"}
+TEST_FILTER = {LBL_PIPELINE_TYPE: "test"}
 
 
 @kopf.on.event("tekton.dev", "v1", "pipelineruns", labels=TEST_FILTER, when=_in_namespace(TENANT_NAMESPACE))
 def on_test_pipelinerun(body, **_):
+    if not _app_matches(body):
+        return
     tracker.on_test_pipelinerun(body)
 
 
 # ---------------------------------------------------------------------------
 # Snapshots
 # ---------------------------------------------------------------------------
-SNAPSHOT_FILTER = {LBL_APPLICATION: APPLICATION, LBL_TEST_EVENT_TYPE: "push"}
 
-
-@kopf.on.event("appstudio.redhat.com", "v1alpha1", "snapshots", labels=SNAPSHOT_FILTER, when=_in_namespace(TENANT_NAMESPACE))
+@kopf.on.event("appstudio.redhat.com", "v1alpha1", "snapshots", when=_in_namespace(TENANT_NAMESPACE))
 def on_snapshot(body, **_):
+    if not _app_matches(body):
+        return
     tracker.on_snapshot(body)
 
 
 # ---------------------------------------------------------------------------
 # Releases
 # ---------------------------------------------------------------------------
-RELEASE_FILTER = {LBL_APPLICATION: APPLICATION, LBL_TEST_EVENT_TYPE: "push"}
 
-
-@kopf.on.event("appstudio.redhat.com", "v1alpha1", "releases", labels=RELEASE_FILTER, when=_in_namespace(TENANT_NAMESPACE))
+@kopf.on.event("appstudio.redhat.com", "v1alpha1", "releases", when=_in_namespace(TENANT_NAMESPACE))
 def on_release(body, **_):
+    if not _app_matches(body):
+        return
     tracker.on_release(body)
 
 
@@ -94,6 +101,8 @@ MANAGED_FILTER = {LBL_PIPELINE_TYPE: "managed", LBL_RELEASE_NS: TENANT_NAMESPACE
 
 @kopf.on.event("tekton.dev", "v1", "pipelineruns", labels=MANAGED_FILTER, when=_in_namespace(RELEASE_NAMESPACE))
 def on_release_pipelinerun(body, **_):
+    if not _app_matches(body):
+        return
     tracker.on_release_pipelinerun(body)
 
 
@@ -115,8 +124,9 @@ def configure(settings: kopf.OperatorSettings, **_):
     settings.peering.standalone = True
     settings.networking.trust_env = True
     logger.info(
-        "Starting controller — resume sync grace period: %ds. "
+        "Starting controller — applications: %s — resume sync grace period: %ds. "
         "Events during this window will be processed silently.",
+        sorted(APPLICATIONS),
         SYNC_GRACE_PERIOD,
     )
     threading.Thread(target=_delayed_set_live, daemon=True).start()
