@@ -198,11 +198,33 @@ class TestPipelineTrackerTransition:
         tracker._transition(info, PipelineState.BUILD_RUNNING)
         assert info.state == PipelineState.RELEASED
 
-    def test_retrying_blocks_failure_reentry(self):
+    def test_retrying_allows_failure_for_retry_chain(self):
+        # RETRYING → FAILURE is allowed so retry N can trigger retry N+1
         tracker = PipelineTracker()
         info = make_pipeline_info(state=PipelineState.BUILD_RETRYING)
         tracker._transition(info, PipelineState.BUILD_FAILED)
-        assert info.state == PipelineState.BUILD_RETRYING
+        assert info.state == PipelineState.BUILD_FAILED
+
+    def test_retrying_blocks_backward_state_rewind(self):
+        # Stale replayed events must not rewind RELEASE_RETRYING to earlier stages
+        tracker = PipelineTracker()
+        for backward in (
+            PipelineState.BUILD_RUNNING,
+            PipelineState.BUILD_SUCCEEDED,
+            PipelineState.SNAPSHOT_CREATED,
+            PipelineState.TESTING,
+            PipelineState.TESTS_PASSED,
+            PipelineState.RELEASING,
+        ):
+            info = make_pipeline_info(state=PipelineState.RELEASE_RETRYING)
+            tracker._transition(info, backward)
+            assert info.state == PipelineState.RELEASE_RETRYING, f"should block RELEASE_RETRYING → {backward}"
+
+    def test_retrying_allows_released(self):
+        tracker = PipelineTracker()
+        info = make_pipeline_info(state=PipelineState.RELEASE_RETRYING)
+        tracker._transition(info, PipelineState.RELEASED)
+        assert info.state == PipelineState.RELEASED
 
     def test_normal_transition(self):
         tracker = PipelineTracker()
