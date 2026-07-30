@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "calunga-release-watcher"
+name = "releases-watcher"
 version = "0.1.0"
 description = "Pipeline watchdog for Konflux — tracks build/test/release pipelines and reports failures"
 requires-python = ">=3.12"

@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: controller
-          image: quay.io/rhopp/calunga-release-watcher:latest
+          image: quay.io/calungaproject/releases-watcher:f657c40
           imagePullPolicy: IfNotPresent
           command: ["kopf", "run"]
           args:

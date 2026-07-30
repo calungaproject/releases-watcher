@@ -8,11 +8,11 @@ data:
   K8S_API_URL: ""  # Set to your Kubernetes API server URL
   SLACK_CHANNEL: ""  # Set to your Slack channel ID
   AI_ANALYSIS_ENABLED: "true"
-  RETRY_ENABLED: "false"
+  RETRY_ENABLED: "true"
   RETRY_CONFIDENCE_THRESHOLD: "medium"
   RELEASE_PLAN: "calunga"
   GOOGLE_CLOUD_PROJECT: ""  # Set to your GCP project ID
   GOOGLE_CLOUD_REGION: "global"
-  AI_MODEL: "claude-sonnet-4-6"
+  AI_MODEL: "claude-haiku-4-5-20251001"
   AI_MAX_LOG_LINES: "200"
   AI_TIMEOUT_SECONDS: "30"
