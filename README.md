@@ -6,10 +6,9 @@ notifications on failures and successful releases.
 
 When a pipeline fails, the controller can optionally run AI-powered
 failure analysis using Claude via Google Vertex AI to classify
-the failure and suggest next steps.
-
-The controller is **read-only** — it never creates or modifies Kubernetes
-resources. It only reacts to changes.
+the failure and suggest next steps. When the failure is classified as
+a transient "fluke," the controller can automatically retry the failed
+step (see [Automatic retries](#automatic-retries)).
 
 ## Pipeline lifecycle
 
@@ -20,14 +19,19 @@ BUILD_RUNNING ─► BUILD_SUCCEEDED ─► SNAPSHOT_CREATED ─► TESTING ─�
       │                                                    │                           │
       ▼                                                    ▼                           ▼
  BUILD_FAILED                                         TESTS_FAILED              RELEASE_FAILED
+      │                                                    │                           │
+      ▼                                                    ▼                           ▼
+BUILD_RETRYING                                      TESTS_RETRYING           RELEASE_RETRYING
 ```
 
 Once a pipeline reaches a terminal state (`RELEASED` or any `*_FAILED`
-state), further updates for that commit SHA are ignored.
+state), further updates for that commit SHA are ignored. `*_RETRYING`
+states are non-terminal — they allow the pipeline to continue when
+retry attempt resources arrive.
 
 ## How it works
 
-The controller uses [kopf](https://kopf.readthedocs.io/) to watch four
+The controller uses [kopf](https://kopf.readthedocs.io/) to watch five
 types of Kubernetes resources, all filtered by application label:
 
 | Resource | Namespace | What it represents |
@@ -45,7 +49,7 @@ trigger log messages and, for terminal states, Slack notifications.
 ### Startup behavior
 
 On startup kopf "resumes" all existing resources. The tracker absorbs
-these silently during a 15-second grace period (`SYNC_GRACE_PERIOD`),
+these silently during a **60-second grace period** (`SYNC_GRACE_PERIOD`),
 then calls `set_live()` which prunes already-finished and stale
 pipelines and enables notifications going forward. SHAs seen during
 the initial sync are remembered so that late watch re-deliveries of
@@ -72,6 +76,38 @@ When `AI_ANALYSIS_ENABLED` is `true` and a pipeline fails, the analyzer:
 
 AI analysis failures are non-blocking — the basic Slack notification
 is always sent even if AI analysis fails.
+
+### Automatic retries
+
+When `RETRY_ENABLED` is `true` and the AI classifies a failure as
+`fluke` with confidence meeting `RETRY_CONFIDENCE_THRESHOLD`, the
+controller automatically retries:
+
+- **Test failure**: patches the Snapshot with `test.appstudio.openshift.io/run`
+  label, which triggers the integration test service to re-run the
+  failed scenario(s).
+- **Release failure**: creates a new `Release` object in `TENANT_NAMESPACE`
+  with the same snapshot and release plan.
+- **Build failure**: not yet implemented (requires replicating PAC behavior).
+
+Retry attempts are tracked in-memory (up to `MAX_RETRIES` per pipeline).
+A threaded Slack reply is sent for each retry attempt and when retries
+are exhausted.
+
+### Proxy support
+
+The controller runs on an OCP hub cluster but watches resources on a
+remote cluster. If that cluster is only reachable through an HTTP proxy,
+set the standard proxy environment variables on the pod:
+
+| Variable | Description |
+|---|---|
+| `HTTPS_PROXY` / `HTTP_PROXY` | Proxy URL, e.g. `http://proxy.example.com:3128` |
+| `NO_PROXY` | Comma-separated hosts/CIDRs to bypass (e.g. `.svc,.cluster.local,10.0.0.0/8`) |
+
+The controller sets `trust_env=True` on kopf's aiohttp session and on
+the `ConnectionInfo` returned by the login handler, so kopf respects
+these variables for all Kubernetes API watch/list connections.
 
 ## Project structure
 
@@ -119,7 +155,8 @@ classification falls within an acceptable set rather than exact matching.
 
 Requirements:
 - `ANTHROPIC_VERTEX_PROJECT_ID` or `GOOGLE_CLOUD_PROJECT` env var set
-- `CLOUD_ML_REGION` env var (defaults to `global`)
+- `CLOUD_ML_REGION` env var (defaults to `global`) — **e2e tests only**;
+  the deployed app uses `GOOGLE_CLOUD_REGION`
 - Valid GCP credentials (`gcloud auth application-default login`)
 
 ```bash
@@ -149,8 +186,7 @@ All configuration is via environment variables.
 | `SLACK_CHANNEL` | *(empty)* | **Required.** Slack channel ID. Pod fails on startup if not set |
 | `K8S_TOKEN` | *(empty)* | Kubernetes bearer token for remote cluster auth |
 | `K8S_API_URL` | *(empty)* | Kubernetes API server URL. If unset, uses in-cluster config |
-| `MAX_RETRIES` | `3` | Maximum retries for pipeline operations |
-| `STALL_TIMEOUT_MINUTES` | `30` | Minutes before a stalled pipeline is considered failed |
+| `MAX_RETRIES` | `3` | Maximum automatic retry attempts per pipeline |
 
 ### AI failure analysis
 
@@ -159,7 +195,15 @@ All configuration is via environment variables.
 | `AI_ANALYSIS_ENABLED` | `false` | Set to `true` to enable AI failure analysis |
 | `GOOGLE_CLOUD_PROJECT` | *(empty)* | GCP project ID for Vertex AI. Required when AI is enabled |
 | `GOOGLE_CLOUD_REGION` | `global` | GCP region for Vertex AI |
-| `AI_MODEL` | `claude-haiku-4-5` | Anthropic model to use |
+| `AI_MODEL` | `claude-haiku-4-5` | Anthropic model ID (deployed configmap uses `claude-haiku-4-5-20251001`) |
 | `AI_MAX_LOG_LINES` | `200` | Maximum log lines to fetch per container |
 | `AI_TIMEOUT_SECONDS` | `30` | Timeout for AI API calls |
 | `GOOGLE_APPLICATION_CREDENTIALS` | *(unset)* | Path to GCP service account key file for Vertex AI auth |
+
+### Automatic retries
+
+| Variable | Default | Description |
+|---|---|---|
+| `RETRY_ENABLED` | `false` | Set to `true` to enable automatic retries for fluke failures |
+| `RETRY_CONFIDENCE_THRESHOLD` | `medium` | Minimum AI confidence to trigger retry (`low`/`medium`/`high`) |
+| `RELEASE_PLAN` | `calunga` | Release plan name used when creating retry Release objects |
