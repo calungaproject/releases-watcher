@@ -51,6 +51,14 @@ RETRYING_STATES = {
 
 TERMINAL_STATES = FAILURE_STATES | {PipelineState.RELEASED}
 
+# A failed release can be retried outside the watcher by creating a new Release
+# or managed PipelineRun for the same tracked build.  Keep other terminal states
+# immutable, but allow handlers to reopen this one when they observe a distinct
+# release attempt.
+_TERMINAL_RECOVERY_TRANSITIONS = {
+    (PipelineState.RELEASE_FAILED, PipelineState.RELEASE_RETRYING),
+}
+
 # From a RETRYING state, block backward transitions to earlier pipeline stages.
 # RETRYING → FAILURE and RETRYING → RELEASED are always allowed.
 _RETRYING_BLOCKED_TRANSITIONS: dict[PipelineState, frozenset] = {
@@ -90,6 +98,7 @@ class PipelineInfo:
     release_retry_count: int = 0
     failure_thread_ts: str = ""
     processed_failure_sources: set[str] = field(default_factory=set)
+    release_attempt_sources: set[str] = field(default_factory=set)
     git_url: str = ""
     git_commit: str = ""
 
@@ -288,7 +297,10 @@ class PipelineTracker:
         old_state = info.state
         if new_state == old_state:
             return
-        if old_state in TERMINAL_STATES:
+        if (
+            old_state in TERMINAL_STATES
+            and (old_state, new_state) not in _TERMINAL_RECOVERY_TRANSITIONS
+        ):
             return
         if new_state in _RETRYING_BLOCKED_TRANSITIONS.get(old_state, frozenset()):
             return
@@ -429,14 +441,33 @@ class PipelineTracker:
         info = self.get_or_create(key, body)
         if info is None:
             return
+        release_source = f"release:{body['metadata']['namespace']}/{name}"
+        managed_processing = body.get("status", {}).get("managedProcessing", {})
+        plr_ref = managed_processing.get("pipelineRun", "")
+        plr_source = f"plr:{plr_ref}" if plr_ref else ""
+        is_new_release_attempt = (
+            release_source not in info.release_attempt_sources
+            and (
+                not plr_source
+                or plr_source not in info.release_attempt_sources
+            )
+        )
+        info.release_attempt_sources.add(release_source)
+        if plr_source:
+            info.release_attempt_sources.add(plr_source)
         info.release = name
         info.namespace = body["metadata"]["namespace"]
+
+        if is_new_release_attempt and info.state == PipelineState.RELEASE_FAILED:
+            self._transition(
+                info,
+                PipelineState.RELEASE_RETRYING,
+                f"New release attempt detected: {name}",
+            )
 
         released_status, released_reason = get_named_condition(body, "Released")
         managed_status, _ = get_named_condition(body, "ManagedPipelineProcessed")
 
-        managed_processing = body.get("status", {}).get("managedProcessing", {})
-        plr_ref = managed_processing.get("pipelineRun", "")
         if plr_ref:
             info.release_pipelinerun = plr_ref
 
@@ -470,11 +501,23 @@ class PipelineTracker:
         info = self.get_or_create(key, body)
         if info is None:
             return
-        already_tracked = info.release_pipelinerun == f"{namespace}/{name}"
-        info.release_pipelinerun = f"{namespace}/{name}"
+        plr_ref = f"{namespace}/{name}"
+        attempt_source = f"plr:{plr_ref}"
+        is_new_release_attempt = (
+            attempt_source not in info.release_attempt_sources
+        )
+        info.release_attempt_sources.add(attempt_source)
+        info.release_pipelinerun = plr_ref
         info.namespace = namespace
 
-        if status is None and self._live and not already_tracked:
+        if is_new_release_attempt and info.state == PipelineState.RELEASE_FAILED:
+            self._transition(
+                info,
+                PipelineState.RELEASE_RETRYING,
+                f"New release PipelineRun attempt detected: {name}",
+            )
+
+        if status is None and self._live and is_new_release_attempt:
             logger.info(
                 "%s Release PipelineRun started: %s (%s)",
                 info.log_prefix,
