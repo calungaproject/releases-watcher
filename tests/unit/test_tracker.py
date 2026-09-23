@@ -285,6 +285,12 @@ class TestPipelineTrackerTransition:
         tracker._transition(info, PipelineState.BUILD_RUNNING)
         assert info.state == PipelineState.RELEASED
 
+    def test_failed_release_allows_retry_recovery(self):
+        tracker = PipelineTracker()
+        info = make_pipeline_info(state=PipelineState.RELEASE_FAILED)
+        tracker._transition(info, PipelineState.RELEASE_RETRYING)
+        assert info.state == PipelineState.RELEASE_RETRYING
+
     def test_retrying_allows_failure_for_retry_chain(self):
         # RETRYING → FAILURE is allowed so retry N can trigger retry N+1
         tracker = PipelineTracker()
@@ -673,6 +679,266 @@ class TestOnRelease:
         assert mock_handle.call_count == 1
 
     @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_manual_rerelease_recovers_failed_pipeline(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        failed = make_body(name="rel-failed", kind="Release", conditions=[
+            {"type": "Released", "status": "False", "reason": "Error"},
+        ])
+        tracker.on_release(failed)
+        assert tracker.get(SHA).state == PipelineState.RELEASE_FAILED
+
+        retry_started = make_body(name="rel-retry", kind="Release", conditions=[
+            {"type": "Released", "status": "Unknown", "reason": "Progressing"},
+        ])
+        tracker.on_release(retry_started)
+        assert tracker.get(SHA).state == PipelineState.RELEASE_RETRYING
+
+        retry_succeeded = make_body(name="rel-retry", kind="Release", conditions=[
+            {"type": "Released", "status": "True", "reason": "Succeeded"},
+        ])
+        tracker.on_release(retry_succeeded)
+        assert tracker.get(SHA).state == PipelineState.RELEASED
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_new_release_with_existing_pipelinerun_recovers_failed_pipeline(
+        self, mock_handle,
+    ):
+        tracker = PipelineTracker()
+        tracker._live = True
+        failed = make_body(
+            name="rel-failed",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "False", "reason": "Error"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-existing",
+                },
+            },
+        )
+        tracker.on_release(failed)
+        assert tracker.get(SHA).state == PipelineState.RELEASE_FAILED
+
+        retry = make_body(
+            name="rel-retry",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "True", "reason": "Succeeded"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-existing",
+                },
+            },
+        )
+        tracker.on_release(retry)
+
+        assert tracker.get(SHA).state == PipelineState.RELEASED
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_existing_release_with_new_pipelinerun_recovers_failed_pipeline(
+        self, mock_handle,
+    ):
+        tracker = PipelineTracker()
+        tracker._live = True
+        failed = make_body(
+            name="rel-1",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "False", "reason": "Error"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-failed",
+                },
+            },
+        )
+        tracker.on_release(failed)
+        assert tracker.get(SHA).state == PipelineState.RELEASE_FAILED
+
+        retry = make_body(
+            name="rel-1",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "Unknown", "reason": "Progressing"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-retry",
+                },
+            },
+        )
+        tracker.on_release(retry)
+
+        info = tracker.get(SHA)
+        assert info.state == PipelineState.RELEASE_RETRYING
+
+        retry_succeeded = make_body(
+            name="managed-retry",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_SUCCEEDED,
+        )
+        tracker.on_release_pipelinerun(retry_succeeded)
+
+        assert info.state == PipelineState.RELEASED
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_same_release_and_pipelinerun_do_not_reopen_failed_pipeline(
+        self, mock_handle,
+    ):
+        tracker = PipelineTracker()
+        tracker._live = True
+        failed = make_body(
+            name="rel-1",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "False", "reason": "Error"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-failed",
+                },
+            },
+        )
+        tracker.on_release(failed)
+        info = tracker.get(SHA)
+        assert info.state == PipelineState.RELEASE_FAILED
+
+        replay = make_body(
+            name="rel-1",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "Unknown", "reason": "Progressing"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-failed",
+                },
+            },
+        )
+        tracker.on_release(replay)
+
+        assert info.state == PipelineState.RELEASE_FAILED
+
+    @patch("calunga_release_watcher.tracker.send_slack_sync", return_value="")
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_stale_release_terminal_events_do_not_finish_active_retry(
+        self, mock_handle, mock_slack,
+    ):
+        tracker = PipelineTracker()
+        tracker._live = True
+        failed = make_body(
+            name="rel-old",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "False", "reason": "Error"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-old",
+                },
+            },
+        )
+        tracker.on_release(failed)
+        info = tracker.get(SHA)
+        info.failure_thread_ts = "1234.5678"
+
+        retry = make_body(
+            name="rel-retry",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "Unknown", "reason": "Progressing"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-retry",
+                },
+            },
+        )
+        tracker.on_release(retry)
+        assert info.state == PipelineState.RELEASE_RETRYING
+
+        stale_success = make_body(
+            name="rel-old",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "True", "reason": "Succeeded"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-old",
+                },
+            },
+        )
+        tracker.on_release(stale_success)
+
+        stale_failure = make_body(
+            name="rel-old",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "False", "reason": "Error"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-old",
+                },
+            },
+        )
+        tracker.on_release(stale_failure)
+
+        assert info.state == PipelineState.RELEASE_RETRYING
+        assert info.release == "rel-retry"
+        assert info.release_pipelinerun == "rhtap-releng-tenant/managed-retry"
+        assert mock_handle.call_count == 1
+        mock_slack.assert_not_called()
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_retry_failure_is_deduped_per_attempt_generation(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        failed = make_body(
+            name="rel-1",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "False", "reason": "Error"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-old",
+                },
+            },
+        )
+        tracker.on_release(failed)
+        assert mock_handle.call_count == 1
+
+        retry = make_body(
+            name="rel-1",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "Unknown", "reason": "Progressing"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-retry",
+                },
+            },
+        )
+        tracker.on_release(retry)
+        info = tracker.get(SHA)
+        assert info.state == PipelineState.RELEASE_RETRYING
+
+        retry["status"]["conditions"] = [
+            {"type": "Released", "status": "False", "reason": "Error"},
+        ]
+        tracker.on_release(retry)
+
+        assert info.state == PipelineState.RELEASE_FAILED
+        assert mock_handle.call_count == 2
+        assert info.release_attempt_generation == 2
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
     def test_release_found_via_snapshot_index(self, mock_handle):
         tracker = PipelineTracker()
         tracker._live = True
@@ -776,6 +1042,255 @@ class TestOnReleasePipelineRun:
         tracker.get(SHA).state = PipelineState.RELEASE_RETRYING
         tracker.on_release_pipelinerun(body)
         assert mock_handle.call_count == 1
+
+    @patch("calunga_release_watcher.tracker.send_slack_sync", return_value="")
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_manual_retry_success_replies_in_failure_thread(
+        self, mock_handle, mock_slack,
+    ):
+        tracker = PipelineTracker()
+        tracker._live = True
+        failed = make_body(
+            name="managed-nz6s5",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_FAILED,
+        )
+        tracker.on_release_pipelinerun(failed)
+        info = tracker.get(SHA)
+        assert info.state == PipelineState.RELEASE_FAILED
+        info.failure_thread_ts = "1234.5678"
+
+        retry_started = make_body(
+            name="managed-s2bgf",
+            namespace="rhtap-releng-tenant",
+        )
+        tracker.on_release_pipelinerun(retry_started)
+        assert info.state == PipelineState.RELEASE_RETRYING
+
+        retry_succeeded = make_body(
+            name="managed-s2bgf",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_SUCCEEDED,
+        )
+        tracker.on_release_pipelinerun(retry_succeeded)
+
+        assert info.state == PipelineState.RELEASED
+        mock_slack.assert_called_once()
+        message, thread_ts = mock_slack.call_args[0]
+        assert "pipeline complete" in message
+        assert "managed-s2bgf" in message
+        assert thread_ts == "1234.5678"
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_stale_old_attempt_does_not_reopen_failed_retry(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        original_failed = make_body(
+            name="managed-original",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_FAILED,
+        )
+        tracker.on_release_pipelinerun(original_failed)
+
+        retry_failed = make_body(
+            name="managed-retry",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_FAILED,
+        )
+        tracker.on_release_pipelinerun(retry_failed)
+        info = tracker.get(SHA)
+        assert info.state == PipelineState.RELEASE_FAILED
+
+        stale_original = make_body(
+            name="managed-original",
+            namespace="rhtap-releng-tenant",
+        )
+        tracker.on_release_pipelinerun(stale_original)
+        assert info.state == PipelineState.RELEASE_FAILED
+
+    @patch("calunga_release_watcher.tracker.send_slack_sync", return_value="")
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_stale_pipelinerun_terminal_events_do_not_finish_active_retry(
+        self, mock_handle, mock_slack,
+    ):
+        tracker = PipelineTracker()
+        tracker._live = True
+        failed_release = make_body(
+            name="rel-1",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "False", "reason": "Error"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-old",
+                },
+            },
+        )
+        tracker.on_release(failed_release)
+        info = tracker.get(SHA)
+        info.failure_thread_ts = "1234.5678"
+
+        retry_started = make_body(
+            name="managed-retry",
+            namespace="rhtap-releng-tenant",
+        )
+        tracker.on_release_pipelinerun(retry_started)
+        assert info.state == PipelineState.RELEASE_RETRYING
+
+        stale_success = make_body(
+            name="managed-old",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_SUCCEEDED,
+        )
+        tracker.on_release_pipelinerun(stale_success)
+
+        stale_failure = make_body(
+            name="managed-old",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_FAILED,
+        )
+        tracker.on_release_pipelinerun(stale_failure)
+
+        assert info.state == PipelineState.RELEASE_RETRYING
+        assert info.release_pipelinerun == "rhtap-releng-tenant/managed-retry"
+        assert mock_handle.call_count == 1
+        mock_slack.assert_not_called()
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_pipelinerun_first_retry_is_completed_by_linked_release(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        failed = make_body(
+            name="rel-1",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "False", "reason": "Error"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-old",
+                },
+            },
+        )
+        tracker.on_release(failed)
+
+        retry_started = make_body(
+            name="managed-retry",
+            namespace="rhtap-releng-tenant",
+            labels={
+                "release.appstudio.openshift.io/name": "rel-1",
+                "release.appstudio.openshift.io/namespace": "calunga-tenant",
+            },
+        )
+        tracker.on_release_pipelinerun(retry_started)
+        info = tracker.get(SHA)
+        assert info.state == PipelineState.RELEASE_RETRYING
+
+        retry_succeeded = make_body(
+            name="rel-1",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "True", "reason": "Succeeded"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-retry",
+                },
+            },
+        )
+        tracker.on_release(retry_succeeded)
+
+        assert info.state == PipelineState.RELEASED
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_linked_release_does_not_reopen_failed_pipelinerun_attempt(
+        self, mock_handle,
+    ):
+        tracker = PipelineTracker()
+        tracker._live = True
+        original_failed = make_body(
+            name="managed-old",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_FAILED,
+        )
+        tracker.on_release_pipelinerun(original_failed)
+
+        retry_failed = make_body(
+            name="managed-retry",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_FAILED,
+            labels={
+                "release.appstudio.openshift.io/name": "rel-1",
+                "release.appstudio.openshift.io/namespace": "calunga-tenant",
+            },
+        )
+        tracker.on_release_pipelinerun(retry_failed)
+        info = tracker.get(SHA)
+        assert info.state == PipelineState.RELEASE_FAILED
+        assert info.release_attempt_generation == 2
+
+        linked_release = make_body(
+            name="rel-1",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "Unknown", "reason": "Progressing"},
+            ],
+            extra_status={
+                "managedProcessing": {
+                    "pipelineRun": "rhtap-releng-tenant/managed-retry",
+                },
+            },
+        )
+        tracker.on_release(linked_release)
+
+        assert info.state == PipelineState.RELEASE_FAILED
+        assert info.release_attempt_generation == 2
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_release_first_retry_attaches_linked_pipelinerun(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        original_failed = make_body(
+            name="managed-old",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_FAILED,
+        )
+        tracker.on_release_pipelinerun(original_failed)
+
+        retry_release = make_body(
+            name="rel-retry",
+            kind="Release",
+            conditions=[
+                {"type": "Released", "status": "Unknown", "reason": "Progressing"},
+            ],
+        )
+        tracker.on_release(retry_release)
+        info = tracker.get(SHA)
+        assert info.state == PipelineState.RELEASE_RETRYING
+        assert info.active_release_pipelinerun_source == ""
+
+        retry_started = make_body(
+            name="managed-retry",
+            namespace="rhtap-releng-tenant",
+            labels={
+                "release.appstudio.openshift.io/name": "rel-retry",
+                "release.appstudio.openshift.io/namespace": "calunga-tenant",
+            },
+        )
+        tracker.on_release_pipelinerun(retry_started)
+        assert info.active_release_pipelinerun_source == (
+            "plr:rhtap-releng-tenant/managed-retry"
+        )
+
+        retry_succeeded = make_body(
+            name="managed-retry",
+            namespace="rhtap-releng-tenant",
+            conditions=CONDITION_SUCCEEDED,
+        )
+        tracker.on_release_pipelinerun(retry_succeeded)
+
+        assert info.state == PipelineState.RELEASED
 
 
 # ---------------------------------------------------------------------------
