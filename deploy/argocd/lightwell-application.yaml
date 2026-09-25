@@ -2,11 +2,12 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: lightwell-release-watcher
+  namespace: calunga--runtime-int
 spec:
   project: default
   source:
-    repoURL: https://github.com/calungaproject/releases-watcher.git
-    targetRevision: main
+    repoURL: https://github.com/rhopp/releases-watcher.git
+    targetRevision: codex/dno-watcher-gitops
     path: deploy/overlays/lightwell
   destination:
     server: https://kubernetes.default.svc
