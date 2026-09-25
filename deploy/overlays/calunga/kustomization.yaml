@@ -9,5 +9,5 @@ patches:
   - path: deployment-patch.yaml
 images:
   - name: quay.io/calungaproject/releases-watcher
-    newName: quay.io/rhopp/calunga-release-watcher
-    digest: sha256:a25aa3c32845d03ea483e2f12aaf481a10b451e7775319bf676957f4ccfe7905
+    newName: quay.io/calungaproject/releases-watcher
+    digest: sha256:5c1abf2ec9322cdd8975d6d0030789791bdc9c472ebdaa7c1a10dc21a793821d
