@@ -5,7 +5,6 @@ metadata:
 data:
   RELEASE_NAMESPACE: rhtap-releng-tenant
   K8S_API_URL: ""
-  SLACK_CHANNEL: ""
   AI_ANALYSIS_ENABLED: "true"
   RETRY_ENABLED: "false"
   RETRY_CONFIDENCE_THRESHOLD: "medium"

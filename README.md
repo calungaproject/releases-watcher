@@ -171,6 +171,21 @@ Without Vertex credentials, e2e tests are automatically skipped.
 pytest tests/ -v
 ```
 
+## Deployment
+
+The two watcher variants are rendered from a shared Kustomize base:
+
+```sh
+kubectl kustomize deploy/overlays/calunga
+kubectl kustomize deploy/overlays/lightwell
+```
+
+The Applications used to deploy these overlays are under `deploy/argocd` and
+use Argo CD's `default` project. The Argo CD instance itself is installed and
+managed outside this repository. See
+[`deploy/argocd/README.md`](deploy/argocd/README.md) for prerequisites and the
+cutover procedure.
+
 ## Configuration
 
 All configuration is via environment variables.

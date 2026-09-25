@@ -3,9 +3,13 @@ kind: Deployment
 metadata:
   name: release-watcher
 spec:
+  selector:
+    matchLabels:
+      app: calunga-release-watcher
   template:
     metadata:
       labels:
+        app: calunga-release-watcher
         paas.redhat.com/appcode: RHPI-001
     spec:
       containers:
@@ -27,6 +31,11 @@ spec:
                   name: calunga-release-watcher-secrets
                   key: slack-token
                   optional: true
+            - name: SLACK_CHANNEL
+              valueFrom:
+                secretKeyRef:
+                  name: calunga-release-watcher-secrets
+                  key: slack-channel
       volumes:
         - name: gcp-sa-key
           secret:
