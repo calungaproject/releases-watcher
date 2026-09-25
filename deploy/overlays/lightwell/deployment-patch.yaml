@@ -32,7 +32,7 @@ spec:
                   name: lightwell-release-watcher-secret
                   key: slack-channel
             - name: NO_PROXY
-              value: ".svc,.cluster.local,10.0.0.0/8,172.0.0.0/8,api.stone-prod-p01.wcfb.p1.openshiftapps.com"
+              value: ".svc,.cluster.local,10.0.0.0/8,172.0.0.0/8"
       volumes:
         - name: gcp-sa-key
           secret:
