@@ -6,8 +6,8 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/rhopp/releases-watcher.git
-    targetRevision: codex/dno-watcher-gitops
+    repoURL: https://github.com/calungaproject/releases-watcher.git
+    targetRevision: main
     path: deploy/overlays/calunga
   destination:
     server: https://kubernetes.default.svc
