@@ -1,9 +1,13 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: lightwell--runtime-int
+namespace: calunga--runtime-int
 namePrefix: lightwell-
 resources:
   - ../../base
 patches:
   - path: configmap-patch.yaml
   - path: deployment-patch.yaml
+images:
+  - name: quay.io/calungaproject/releases-watcher
+    newName: quay.io/calungaproject/releases-watcher
+    digest: sha256:5c1abf2ec9322cdd8975d6d0030789791bdc9c472ebdaa7c1a10dc21a793821d

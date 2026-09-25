@@ -3,7 +3,14 @@ kind: Deployment
 metadata:
   name: release-watcher
 spec:
+  selector:
+    matchLabels:
+      app: lightwell-release-watcher
   template:
+    metadata:
+      labels:
+        app: lightwell-release-watcher
+        paas.redhat.com/appcode: RHPI-001
     spec:
       containers:
         - name: controller
@@ -19,6 +26,11 @@ spec:
                   name: lightwell-release-watcher-secret
                   key: slack-token
                   optional: true
+            - name: SLACK_CHANNEL
+              valueFrom:
+                secretKeyRef:
+                  name: lightwell-release-watcher-secret
+                  key: slack-channel
             - name: NO_PROXY
               value: ".svc,.cluster.local,10.0.0.0/8,172.0.0.0/8,api.stone-prod-p01.wcfb.p1.openshiftapps.com"
       volumes:

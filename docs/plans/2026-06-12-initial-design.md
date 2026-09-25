@@ -149,7 +149,7 @@ Uses the Slack `chat.postMessage` API:
 import aiohttp
 
 SLACK_TOKEN = os.environ["SLACK_BOT_TOKEN"]  # xoxb-...
-SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "UGZCNQU69")
+SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "")
 
 async def notify_slack(message: str):
     async with aiohttp.ClientSession() as session:

@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: lightwell-release-watcher
+  namespace: calunga--runtime-int
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/calungaproject/releases-watcher.git
+    targetRevision: main
+    path: deploy/overlays/lightwell
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: calunga--runtime-int
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+    syncOptions:
+      - ServerSideApply=true

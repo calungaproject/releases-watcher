@@ -5,4 +5,6 @@ metadata:
 data:
   TENANT_NAMESPACE: calunga-tenant
   APPLICATION: calunga-v2-index-main
+  K8S_API_URL: https://api.kflux-prd-rh03.nnv1.p1.openshiftapps.com:6443
+  GOOGLE_CLOUD_PROJECT: itpc-gcp-pnd-pe-eng-claude
   RETRY_ENABLED: "true"

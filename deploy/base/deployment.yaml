@@ -40,6 +40,11 @@ spec:
                   name: release-watcher-secret
                   key: slack-token
                   optional: true
+            - name: SLACK_CHANNEL
+              valueFrom:
+                secretKeyRef:
+                  name: release-watcher-secret
+                  key: slack-channel
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: /var/run/secrets/gcp/sa-key.json
             - name: HTTPS_PROXY

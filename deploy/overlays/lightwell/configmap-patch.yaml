@@ -5,4 +5,6 @@ metadata:
 data:
   TENANT_NAMESPACE: lightwell-poc-tenant
   APPLICATION: "pnc-import,pnc-import-remediated"
+  K8S_API_URL: https://api.stone-prod-p01.wcfb.p1.openshiftapps.com:6443
+  GOOGLE_CLOUD_PROJECT: itpc-gcp-pnd-pe-eng-claude
   RETRY_ENABLED: "false"
