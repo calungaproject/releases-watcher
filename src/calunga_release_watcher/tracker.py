@@ -20,6 +20,7 @@ from calunga_release_watcher.config import (
     LBL_TEST_SHA,
 )
 from calunga_release_watcher.slack import send_slack_sync
+from calunga_release_watcher.image_metadata import get_gav
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,7 @@ class PipelineInfo:
     active_release_pipelinerun_source: str = ""
     git_url: str = ""
     git_commit: str = ""
+    input_image: str = ""
 
     @property
     def git_commit_short(self) -> str:
@@ -351,8 +353,10 @@ class PipelineTracker:
         elif new_state == PipelineState.RELEASED:
             logger.info(msg)
             application_context = f"Application: {info.application}. " if info.application else ""
+            gav = get_gav(info.input_image) if info.input_image else ""
+            title = gav or f"{info.package_title} ({info.git_summary})"
             release_msg = (
-                f"✅ {info.package_title} ({info.git_summary}) — pipeline complete. "
+                f"✅ {title} — pipeline complete. "
                 f"{application_context}"
                 f"Released via {info.release_pipelinerun}."
             )
@@ -403,6 +407,10 @@ class PipelineTracker:
         if info is None:
             return
         info.snapshot = name
+        components = body.get("spec", {}).get("components", [])
+        # A primary GAV identifies one component; don't label a multi-component
+        # release with only one component's artifact identity.
+        info.input_image = components[0].get("containerImage", "") if len(components) == 1 else ""
         info.namespace = body["metadata"]["namespace"]
         self._snapshot_index[name] = key
         if not info.git_url or not info.git_commit:
