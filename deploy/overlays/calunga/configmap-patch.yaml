@@ -9,3 +9,4 @@ data:
   K8S_API_URL: https://api.kflux-prd-rh03.nnv1.p1.openshiftapps.com:6443
   GOOGLE_CLOUD_PROJECT: itpc-gcp-pnd-pe-eng-claude
   RETRY_ENABLED: "true"
+  KONFLUX_UI_URL: https://konflux-ui.apps.kflux-prd-rh03.nnv1.p1.openshiftapps.com

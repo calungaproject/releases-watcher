@@ -6,6 +6,7 @@ APPLICATION = os.environ.get("APPLICATION", "calunga-v2-index-main")
 APPLICATIONS = {app.strip() for app in APPLICATION.split(",") if app.strip()}
 WATCH_EVENT_TYPE = os.environ.get("WATCH_EVENT_TYPE", "")
 IMAGE_METADATA_PROXY_URL = os.environ.get("IMAGE_METADATA_PROXY_URL", "")
+KONFLUX_UI_URL = os.environ.get("KONFLUX_UI_URL", "")
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "")

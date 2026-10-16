@@ -60,6 +60,14 @@ response limit, and do not follow redirects or download layers.
 
 ## Deploy the Argo applications
 
+Each overlay sets `KONFLUX_UI_URL` to its source cluster's Konflux UI.
+Release success and release failure messages link to the managed PipelineRun
+using its own namespace and name. If the UI URL or PipelineRun reference is
+unavailable, messages retain their existing text without a link. Build and
+test failure messages do not acquire release-pipeline links. Links may stop
+resolving after PipelineRun retention removes the resource, depending on the
+UI's archive support.
+
 After each Application's configured Git revision is available remotely, apply
 the desired Application in the namespace where the external Argo CD instance
 runs:

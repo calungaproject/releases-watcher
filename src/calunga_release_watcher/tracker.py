@@ -1,6 +1,7 @@
 import enum
 import logging
 import threading
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -10,6 +11,7 @@ from calunga_release_watcher.config import (
     ANN_TEST_SHA,
     ANN_TEST_SHA_TITLE,
     LBL_APPLICATION,
+    KONFLUX_UI_URL,
     LBL_BUILD_PLR,
     LBL_BUILD_SHA,
     LBL_COMPONENT,
@@ -114,6 +116,19 @@ class PipelineInfo:
     input_image: str = ""
 
     @property
+    def release_pipeline_link(self) -> str:
+        if not KONFLUX_UI_URL or "/" not in self.release_pipelinerun:
+            return ""
+        namespace, name = self.release_pipelinerun.split("/", 1)
+        if not namespace or not name:
+            return ""
+        url = (
+            f"{KONFLUX_UI_URL.rstrip('/')}/ns/{quote(namespace, safe='')}/"
+            f"pipelineruns/{quote(name, safe='')}"
+        )
+        return f"<{url}|Release pipeline>"
+
+    @property
     def git_commit_short(self) -> str:
         return self.git_commit[:7] if self.git_commit else ""
 
@@ -209,6 +224,8 @@ def _handle_failure(
 ) -> None:
     from calunga_release_watcher.retrier import attempt_retry
 
+    release_link = info.release_pipeline_link if state == PipelineState.RELEASE_FAILED else ""
+
     def _worker():
         analysis = None
         if body is not None:
@@ -220,6 +237,8 @@ def _handle_failure(
                 logger.exception("%s AI analysis failed", info.log_prefix)
 
         slack_msg = f"❌ {info.package_title} ({info.git_summary}) — {detail}"
+        if release_link:
+            slack_msg += f"\n{release_link}"
         if analysis:
             slack_msg += format_analysis(analysis)
         ts = send_slack_sync(slack_msg)
@@ -358,7 +377,7 @@ class PipelineTracker:
             release_msg = (
                 f"✅ {title} — pipeline complete. "
                 f"{application_context}"
-                f"Released via {info.release_pipelinerun}."
+                f"Released via {info.release_pipeline_link or info.release_pipelinerun}."
             )
             if info.failure_thread_ts:
                 send_slack_sync(release_msg, info.failure_thread_ts)
