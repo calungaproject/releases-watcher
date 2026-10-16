@@ -27,7 +27,11 @@ def get_gav(image: str) -> str:
     """
     if not IMAGE_METADATA_PROXY_URL:
         return ""
-    proxy = urllib.parse.urlsplit(IMAGE_METADATA_PROXY_URL)
+    try:
+        proxy = urllib.parse.urlsplit(IMAGE_METADATA_PROXY_URL)
+    except ValueError:
+        logger.warning("Invalid image metadata proxy URL; using existing title")
+        return ""
     token = os.environ.get("K8S_TOKEN", "")
     if (
         proxy.scheme != "https" or not proxy.hostname or proxy.username
@@ -49,11 +53,11 @@ def get_gav(image: str) -> str:
         f"{IMAGE_METADATA_PROXY_URL.rstrip('/')}/v2/{organization}/"
         f"{TENANT_NAMESPACE}/{repository}/manifests/{digest}"
     )
-    request = urllib.request.Request(url, headers={
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.oci.image.manifest.v1+json",
-    })
     try:
+        request = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.oci.image.manifest.v1+json",
+        })
         with urllib.request.build_opener(_NoRedirect()).open(request, timeout=5) as response:
             raw = response.read(1024 * 1024 + 1)
         if len(raw) > 1024 * 1024:

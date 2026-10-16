@@ -12,6 +12,8 @@ from calunga_release_watcher.config import (
     ANN_TEST_SHA_TITLE,
     LBL_APPLICATION,
     KONFLUX_UI_URL,
+    IMAGE_METADATA_PROXY_URL,
+    TENANT_NAMESPACE,
     LBL_BUILD_PLR,
     LBL_BUILD_SHA,
     LBL_COMPONENT,
@@ -25,6 +27,20 @@ from calunga_release_watcher.slack import send_slack_sync
 from calunga_release_watcher.image_metadata import get_gav
 
 logger = logging.getLogger(__name__)
+
+
+def _read_resource(plural: str, name: str, namespace: str) -> dict:
+    from kubernetes import client
+    from calunga_release_watcher.k8s import get_k8s_client
+
+    try:
+        return client.CustomObjectsApi(get_k8s_client()).get_namespaced_custom_object(
+            group="appstudio.redhat.com", version="v1alpha1",
+            namespace=namespace, plural=plural, name=name, _request_timeout=5,
+        )
+    except Exception as exc:
+        logger.warning("Release notification context lookup failed (%s)", type(exc).__name__)
+        return {}
 
 
 class PipelineState(enum.Enum):
@@ -268,6 +284,7 @@ class PipelineTracker:
     def __init__(self) -> None:
         self._pipelines: dict[str, PipelineInfo] = {}
         self._snapshot_index: dict[str, str] = {}
+        self._snapshot_images: dict[tuple[str, str], str] = {}
         self._seen_keys: set[str] = set()
         self._live = False
 
@@ -286,6 +303,10 @@ class PipelineTracker:
         self._snapshot_index = {
             snap: key for snap, key in self._snapshot_index.items()
             if key in active_keys
+        }
+        self._snapshot_images = {
+            ref: image for ref, image in self._snapshot_images.items()
+            if ref[1] in self._snapshot_index
         }
         watching = len(self._pipelines)
         logger.info(
@@ -327,6 +348,41 @@ class PipelineTracker:
     def get(self, key: str) -> PipelineInfo | None:
         return self._pipelines.get(key)
 
+    def _prepare_release_notification(self, info: PipelineInfo, body: dict) -> None:
+        """Resolve optional context without delaying or suppressing notification delivery."""
+        labels = body.get("metadata", {}).get("labels", {})
+        snapshot = (
+            body.get("spec", {}).get("snapshot")
+            or labels.get(LBL_RELEASE_SNAPSHOT) or labels.get(LBL_SNAPSHOT)
+        )
+        release = body if body.get("kind") == "Release" else {}
+        # A terminal Release may arrive before the managed PipelineRun event.
+        # Re-read that same Release once for its latest reference; never wait
+        # indefinitely, since validation failures may have no PipelineRun.
+        if KONFLUX_UI_URL and not info.release_pipelinerun:
+            source = info.active_release_source.removeprefix("release:")
+            if "/" in source:
+                namespace, name = source.split("/", 1)
+                release = _read_resource("releases", name, namespace) or release
+                ref = release.get("status", {}).get("managedProcessing", {}).get("pipelineRun", "")
+                if ref:
+                    info.release_pipelinerun = ref
+        snapshot = snapshot or release.get("spec", {}).get("snapshot")
+        # With an event, never borrow the most recently seen snapshot's image:
+        # it may be a different artifact with the same SHA.
+        info.input_image = ""
+        if not IMAGE_METADATA_PROXY_URL or not snapshot:
+            return
+        ref = (TENANT_NAMESPACE, snapshot)
+        if ref not in self._snapshot_images:
+            resource = _read_resource("snapshots", snapshot, TENANT_NAMESPACE)
+            if resource:
+                components = resource.get("spec", {}).get("components", [])
+                self._snapshot_images[ref] = (
+                    components[0].get("containerImage", "") if len(components) == 1 else ""
+                )
+        info.input_image = self._snapshot_images.get(ref, "")
+
     @staticmethod
     def _start_release_attempt(
         info: PipelineInfo,
@@ -361,6 +417,9 @@ class PipelineTracker:
 
         if not self._live:
             return
+
+        if body is not None and new_state in (PipelineState.RELEASED, PipelineState.RELEASE_FAILED):
+            self._prepare_release_notification(info, body)
 
         msg = f"{info.log_prefix} {new_state.value}"
         if detail:
@@ -430,6 +489,7 @@ class PipelineTracker:
         # A primary GAV identifies one component; don't label a multi-component
         # release with only one component's artifact identity.
         info.input_image = components[0].get("containerImage", "") if len(components) == 1 else ""
+        self._snapshot_images[(body["metadata"]["namespace"], name)] = info.input_image
         info.namespace = body["metadata"]["namespace"]
         self._snapshot_index[name] = key
         if not info.git_url or not info.git_commit:
@@ -563,7 +623,7 @@ class PipelineTracker:
                 info.release_pipelinerun = plr_ref
 
         if released_status == "True":
-            self._transition(info, PipelineState.RELEASED, f"Release succeeded: {name}")
+            self._transition(info, PipelineState.RELEASED, f"Release succeeded: {name}", body=body)
         elif released_status == "False" and released_reason not in ("Progressing", "Running"):
             source_key = self._release_failure_key(info)
             if source_key not in info.processed_failure_sources:
@@ -663,6 +723,7 @@ class PipelineTracker:
                 info,
                 PipelineState.RELEASED,
                 f"Release PipelineRun succeeded: {name} — PIPELINE COMPLETE",
+                body=body,
             )
         elif status == "False":
             source_key = self._release_failure_key(info)

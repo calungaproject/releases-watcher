@@ -52,6 +52,10 @@ downloading artifact layers. The Lightwell overlay enables enrichment with
 `IMAGE_METADATA_PROXY_URL`; leaving it unset disables lookups (the Calunga
 default). The watcher uses its existing `K8S_TOKEN` to fetch the single-component
 snapshot's digest-pinned input manifest when sending a release success message.
+Images are selected by the snapshot referenced by the release, rather than
+whichever snapshot event arrived last. If that snapshot has not been observed,
+the watcher reads it from the tenant API before attempting enrichment; an
+unavailable snapshot retains the existing title.
 The primary GAV replaces the package/source title; a GAV count greater than one
 adds an additional-artifact count. Multi-component snapshots retain the existing
 title. Missing annotations, rejected access, or lookup failures also retain the
@@ -67,6 +71,11 @@ unavailable, messages retain their existing text without a link. Build and
 test failure messages do not acquire release-pipeline links. Links may stop
 resolving after PipelineRun retention removes the resource, depending on the
 UI's archive support.
+Before sending a terminal release notification without a PipelineRun reference,
+the watcher re-reads that Release once for the latest reference. Context API
+reads use a five-second timeout. If the reference remains unavailable (for
+example, validation failed before any pipeline was created), the notification
+is delivered without a link rather than waiting indefinitely.
 
 After each Application's configured Git revision is available remotely, apply
 the desired Application in the namespace where the external Argo CD instance

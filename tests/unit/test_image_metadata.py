@@ -71,7 +71,9 @@ def test_lookup_failure_falls_back_without_logging_token(proxy, failure, caplog)
 
 
 def test_malformed_or_oversized_manifest(proxy):
-    for raw in [b"not JSON", b"x" * (1024 * 1024 + 1), b'[]']:
+    oversized = json.dumps({"annotations": {"dev.lightwell.primary-gav": GAV},
+                            "padding": "x" * (1024 * 1024)}).encode()
+    for raw in [b"not JSON", oversized, b'[]']:
         proxy[1].read.return_value = raw
         assert image_metadata.get_gav(IMAGE) == ""
 
@@ -94,7 +96,7 @@ def test_snapshot_image_reaches_success_message(gav):
         tracker._transition(info, PipelineState.RELEASED)
     lookup.assert_called_once_with(IMAGE)
     message = slack.call_args.args[0]
-    assert (GAV if gav else "snapshot (build-1)") in message
+    assert message.split(" — pipeline complete.")[0] == "✅ " + (GAV if gav else "snapshot (build-1)")
     assert "Application: pnc-import-novel." in message
 
 
@@ -107,3 +109,56 @@ def test_multi_component_snapshot_does_not_use_one_components_gav():
         "spec": {"components": [{"containerImage": IMAGE}, {"containerImage": IMAGE}]},
     })
     assert tracker.get("build-1").input_image == ""
+
+
+def test_malformed_proxy_url_falls_back(proxy, monkeypatch):
+    monkeypatch.setattr(image_metadata, "IMAGE_METADATA_PROXY_URL", "https://[broken")
+    assert image_metadata.get_gav(IMAGE) == ""
+    proxy[0].assert_not_called()
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("managed", [False, True])
+def test_success_uses_referenced_snapshot_even_if_latest_differs(monkeypatch, cached, managed):
+    from calunga_release_watcher import tracker as module
+    monkeypatch.setattr(module, "IMAGE_METADATA_PROXY_URL", "https://proxy.example.com")
+    monkeypatch.setattr(module, "TENANT_NAMESPACE", "lightwell-poc-tenant")
+    monkeypatch.setattr(module, "KONFLUX_UI_URL", "")
+    tracker = PipelineTracker()
+    tracker._live = True
+    snapshot = {"spec": {"components": [{"containerImage": IMAGE}]}}
+    if cached:
+        tracker._snapshot_images[("lightwell-poc-tenant", "released-snapshot")] = IMAGE
+    info = tracker.get_or_create("sha", {"metadata": {"name": "build"}})
+    info.input_image = "wrong-latest-image"
+    info.snapshot = "different-snapshot"
+    body = {
+        "kind": "PipelineRun" if managed else "Release",
+        "metadata": {"name": "managed" if managed else "release", "namespace": "lightwell-poc-tenant", "labels": {
+            "pac.test.appstudio.openshift.io/sha": "sha",
+            ("appstudio.openshift.io/snapshot" if managed else "release.appstudio.openshift.io/snapshot"): "released-snapshot",
+        }},
+        "status": {"conditions": [{"type": "Succeeded" if managed else "Released", "status": "True"}]},
+    }
+    with patch.object(module, "_read_resource", return_value=snapshot) as read, patch.object(module, "get_gav", return_value=GAV) as lookup, patch.object(module, "_fire_slack") as slack:
+        (tracker.on_release_pipelinerun if managed else tracker.on_release)(body)
+    lookup.assert_called_once_with(IMAGE)
+    assert slack.call_args.args[0].startswith("✅ " + GAV + " —")
+    if cached:
+        read.assert_not_called()
+    else:
+        read.assert_called_once_with("snapshots", "released-snapshot", "lightwell-poc-tenant")
+
+
+def test_missing_snapshot_falls_back_without_using_unrelated_image(monkeypatch):
+    from calunga_release_watcher import tracker as module
+    monkeypatch.setattr(module, "IMAGE_METADATA_PROXY_URL", "https://proxy.example.com")
+    monkeypatch.setattr(module, "KONFLUX_UI_URL", "")
+    tracker = PipelineTracker()
+    tracker._live = True
+    info = tracker.get_or_create("sha", {"metadata": {"name": "build"}})
+    info.input_image = IMAGE
+    with patch.object(module, "_read_resource", return_value={}), patch.object(module, "get_gav") as lookup, patch.object(module, "_fire_slack") as slack:
+        tracker._transition(info, PipelineState.RELEASED, body={"spec": {"snapshot": "unavailable"}})
+    lookup.assert_not_called()
+    assert slack.call_args.args[0].startswith("✅ build (sha) —")

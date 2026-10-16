@@ -49,3 +49,27 @@ def test_build_failures_do_not_link_to_previous_release(monkeypatch):
         module._handle_failure(None, info, PipelineState.BUILD_FAILED, "build failed")
         thread.call_args.kwargs["target"]()
     assert "Release pipeline" not in slack.call_args.args[0]
+
+
+@pytest.mark.parametrize("reference", ["managed/recovered", ""])
+@pytest.mark.parametrize("failure", [False, True])
+def test_terminal_release_rechecks_missing_pipeline_without_waiting(monkeypatch, reference, failure):
+    monkeypatch.setattr(module, "KONFLUX_UI_URL", "https://ui.example.com")
+    monkeypatch.setattr(module, "IMAGE_METADATA_PROXY_URL", "")
+    tracker = PipelineTracker()
+    tracker._live = True
+    info = tracker.get_or_create("sha", {"metadata": {"name": "build"}})
+    body = {"kind": "Release", "metadata": {"name": "release", "namespace": "tenant", "labels": {
+        "pac.test.appstudio.openshift.io/sha": "sha",
+    }}, "status": {"conditions": [{"type": "Released", "status": "False" if failure else "True", "reason": "Failed" if failure else "Succeeded"}]}}
+    resource = {"status": {"managedProcessing": {"pipelineRun": reference}}}
+    with patch.object(module, "_read_resource", return_value=resource) as read, patch.object(module, "_fire_slack") as success, patch.object(module.threading, "Thread") as thread, patch.object(module, "send_slack_sync") as failed:
+        tracker.on_release(body)
+        if failure:
+            thread.call_args.kwargs["target"]()
+            message = failed.call_args.args[0]
+        else:
+            message = success.call_args.args[0]
+    read.assert_called_once_with("releases", "release", "tenant")
+    assert ("<https://ui.example.com/ns/managed/pipelineruns/recovered|Release pipeline>" in message) == bool(reference)
+    assert info.state == (PipelineState.RELEASE_FAILED if failure else PipelineState.RELEASED)
