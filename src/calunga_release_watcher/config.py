@@ -4,6 +4,7 @@ TENANT_NAMESPACE = os.environ.get("TENANT_NAMESPACE", "calunga-tenant")
 RELEASE_NAMESPACE = os.environ.get("RELEASE_NAMESPACE", "rhtap-releng-tenant")
 APPLICATION = os.environ.get("APPLICATION", "calunga-v2-index-main")
 APPLICATIONS = {app.strip() for app in APPLICATION.split(",") if app.strip()}
+WATCH_EVENT_TYPE = os.environ.get("WATCH_EVENT_TYPE", "")
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "")

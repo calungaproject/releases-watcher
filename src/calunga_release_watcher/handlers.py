@@ -8,12 +8,15 @@ import kopf
 from calunga_release_watcher.config import (
     APPLICATIONS,
     LBL_APPLICATION,
+    LBL_BUILD_EVENT_TYPE,
     LBL_PIPELINE_TYPE,
     LBL_RELEASE_NS,
+    LBL_TEST_EVENT_TYPE,
     RELEASE_NAMESPACE,
     SLACK_BOT_TOKEN,
     SLACK_CHANNEL,
     TENANT_NAMESPACE,
+    WATCH_EVENT_TYPE,
 )
 from calunga_release_watcher.tracker import PipelineTracker
 
@@ -40,6 +43,17 @@ def _app_matches(body: dict) -> bool:
     return labels.get(LBL_APPLICATION) in APPLICATIONS
 
 
+def _event_matches(body: dict, event_key: str) -> bool:
+    if not WATCH_EVENT_TYPE:
+        return True
+    metadata = body.get("metadata", {})
+    event_type = (
+        metadata.get("labels", {}).get(event_key)
+        or metadata.get("annotations", {}).get(event_key)
+    )
+    return event_type == WATCH_EVENT_TYPE
+
+
 def _delayed_set_live():
     time.sleep(SYNC_GRACE_PERIOD)
     tracker.set_live()
@@ -53,7 +67,7 @@ BUILD_FILTER = {LBL_PIPELINE_TYPE: "build"}
 
 @kopf.on.event("tekton.dev", "v1", "pipelineruns", labels=BUILD_FILTER, when=_in_namespace(TENANT_NAMESPACE))
 def on_build_pipelinerun(body, **_):
-    if not _app_matches(body):
+    if not _app_matches(body) or not _event_matches(body, LBL_BUILD_EVENT_TYPE):
         return
     tracker.on_build_pipelinerun(body)
 
@@ -66,7 +80,7 @@ TEST_FILTER = {LBL_PIPELINE_TYPE: "test"}
 
 @kopf.on.event("tekton.dev", "v1", "pipelineruns", labels=TEST_FILTER, when=_in_namespace(TENANT_NAMESPACE))
 def on_test_pipelinerun(body, **_):
-    if not _app_matches(body):
+    if not _app_matches(body) or not _event_matches(body, LBL_TEST_EVENT_TYPE):
         return
     tracker.on_test_pipelinerun(body)
 
@@ -77,7 +91,7 @@ def on_test_pipelinerun(body, **_):
 
 @kopf.on.event("appstudio.redhat.com", "v1alpha1", "snapshots", when=_in_namespace(TENANT_NAMESPACE))
 def on_snapshot(body, **_):
-    if not _app_matches(body):
+    if not _app_matches(body) or not _event_matches(body, LBL_TEST_EVENT_TYPE):
         return
     tracker.on_snapshot(body)
 

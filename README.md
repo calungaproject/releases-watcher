@@ -42,6 +42,14 @@ types of Kubernetes resources, all filtered by application label:
 | `Release` | tenant | The release request |
 | `PipelineRun` (type=managed) | release | The release pipeline that does the actual work |
 
+The Calunga overlay sets `WATCH_EVENT_TYPE=push` to track on-merge builds,
+tests, and snapshots only. PR checks and resources without an event type are
+ignored before tracking, analysis, retries, or Slack notifications. Build runs
+use `pipelinesascode.tekton.dev/event-type`; tests and snapshots use
+`pac.test.appstudio.openshift.io/event-type` (labels, with annotation fallback).
+Release resources continue to be watched because they may lack event metadata.
+Leaving `WATCH_EVENT_TYPE` empty preserves watching all event types.
+
 Each Kubernetes event is routed to the `PipelineTracker`, which maintains
 an in-memory map of commit SHA to pipeline state. State transitions
 trigger log messages and, for terminal states, Slack notifications.
@@ -195,6 +203,7 @@ All configuration is via environment variables.
 | Variable | Default | Description |
 |---|---|---|
 | `TENANT_NAMESPACE` | `calunga-tenant` | Namespace where builds, tests, snapshots, and releases live |
+| `WATCH_EVENT_TYPE` | *(empty)* | Optional event filter for builds, tests, and snapshots; Calunga sets `push` |
 | `RELEASE_NAMESPACE` | `rhtap-releng-tenant` | Namespace where release PipelineRuns run |
 | `APPLICATION` | `calunga-v2-index-main` | AppStudio application name to filter resources by |
 | `SLACK_BOT_TOKEN` | *(empty)* | **Required.** Slack Bot token. Pod fails on startup if not set |
