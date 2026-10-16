@@ -9,6 +9,7 @@ from calunga_release_watcher.config import (
     ANN_BUILD_SHA_TITLE,
     ANN_TEST_SHA,
     ANN_TEST_SHA_TITLE,
+    LBL_APPLICATION,
     LBL_BUILD_PLR,
     LBL_BUILD_SHA,
     LBL_COMPONENT,
@@ -85,6 +86,7 @@ class PipelineInfo:
     sha: str
     sha_short: str
     package_title: str
+    application: str = ""
     namespace: str = ""
     state: PipelineState = PipelineState.BUILD_RUNNING
     build_pipelinerun: str = ""
@@ -282,7 +284,13 @@ class PipelineTracker:
         self._live = True
 
     def get_or_create(self, key: str, body: dict) -> PipelineInfo | None:
+        application = (
+            body.get("metadata", {}).get("labels", {}).get(LBL_APPLICATION)
+            or body.get("spec", {}).get("application", "")
+        )
         if key in self._pipelines:
+            if application:
+                self._pipelines[key].application = application
             return self._pipelines[key]
         if self._live and key in self._seen_keys:
             return None
@@ -291,6 +299,7 @@ class PipelineTracker:
             sha=key,
             sha_short=key[:12],
             package_title=extract_package_title(body),
+            application=application,
         )
         return self._pipelines[key]
 
@@ -341,8 +350,10 @@ class PipelineTracker:
             _handle_failure(body, info, new_state, detail)
         elif new_state == PipelineState.RELEASED:
             logger.info(msg)
+            application_context = f"Application: {info.application}. " if info.application else ""
             release_msg = (
                 f"✅ {info.package_title} ({info.git_summary}) — pipeline complete. "
+                f"{application_context}"
                 f"Released via {info.release_pipelinerun}."
             )
             if info.failure_thread_ts:
