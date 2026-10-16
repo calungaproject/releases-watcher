@@ -20,6 +20,46 @@ creating the Applications:
 The Kubernetes tokens authenticate to the remote clusters named by each
 overlay's `K8S_API_URL`; they are not service-account tokens for DNO.
 
+### Lightwell image metadata access (p01 prerequisite)
+
+Lightwell GAV enrichment through `image-rbac-proxy` requires the
+watcher's p01 service account, `lightwell-poc-tenant/konflux-bot-0`, to have read
+access to `imagerepositories.appstudio.redhat.com` in `lightwell-poc-tenant`.
+The proxy uses this permission to allow access to all component image
+repositories in that tenant. The existing p01 token used by the DNO watcher
+can authenticate to the proxy; no Quay pull secret needs to be copied.
+
+The prerequisite RoleBinding is defined **for p01**, separately from the
+DNO Argo applications. It binds the existing
+`konflux-externalpuller-bot-actions` ClusterRole to `konflux-bot-0` only within
+`lightwell-poc-tenant`:
+
+```sh
+KUBECONFIG=/home/rhopp/temp/p01.kubeconfig \
+  kubectl apply -f deploy/prerequisites/p01/lightwell-image-reader.yaml
+```
+
+The ClusterRole grants `get`, `list`, and `watch` on
+`imagerepositories.appstudio.redhat.com`. This binding follows p01's policy:
+service accounts with the `konflux-bot-` prefix can only be bound to
+ClusterRoles matching `konflux-*-bot-actions`, not to custom Roles.
+
+The proxy endpoint is
+`https://image-rbac-proxy.apps.stone-prod-p01.wcfb.p1.openshiftapps.com`.
+GAV values are OCI manifest annotations (for example,
+`dev.lightwell.primary-gav`), so fetching the manifest does not require
+downloading artifact layers. The Lightwell overlay enables enrichment with
+`IMAGE_METADATA_PROXY_URL`; leaving it unset disables lookups (the Calunga
+default). The watcher uses its existing `K8S_TOKEN` to fetch the single-component
+snapshot's digest-pinned input manifest when sending a release success message.
+The primary GAV replaces the package/source title; a GAV count greater than one
+adds an additional-artifact count. Multi-component snapshots retain the existing
+title. Missing annotations, rejected access, or lookup failures also retain the
+existing message. Requests use TLS verification, a five-second timeout, a 1 MiB
+response limit, and do not follow redirects or download layers.
+
+## Deploy the Argo applications
+
 After each Application's configured Git revision is available remotely, apply
 the desired Application in the namespace where the external Argo CD instance
 runs:
