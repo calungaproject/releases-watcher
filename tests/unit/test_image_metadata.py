@@ -170,3 +170,42 @@ def test_missing_snapshot_falls_back_without_using_unrelated_image(monkeypatch):
         tracker._transition(info, PipelineState.RELEASED, body={"spec": {"snapshot": "unavailable"}})
     lookup.assert_not_called()
     assert slack.call_args.args[0].startswith("✅ build (sha) —")
+
+
+@pytest.mark.parametrize("failure", [False, True])
+@pytest.mark.parametrize("available", [False, True])
+def test_snapshot_event_between_resolution_and_notification(monkeypatch, failure, available):
+    """An overlapping snapshot event must not replace a release's resolved image."""
+    from calunga_release_watcher import tracker as module
+    monkeypatch.setattr(module, "IMAGE_METADATA_PROXY_URL", "https://proxy.example.com")
+    monkeypatch.setattr(module, "TENANT_NAMESPACE", "tenant")
+    monkeypatch.setattr(module, "KONFLUX_UI_URL", "")
+    tracker = PipelineTracker()
+    tracker._live = True
+    info = tracker.get_or_create("build-1", {"metadata": {"name": "build"}})
+    if available:
+        tracker._snapshot_images[("tenant", "released-snapshot")] = IMAGE
+    prepare = tracker._prepare_release_notification
+
+    def overlapping_snapshot(info, body):
+        resolved_image = prepare(info, body)
+        tracker.on_snapshot({
+            "metadata": {"name": "other-snapshot", "namespace": "tenant", "labels": {
+                "appstudio.openshift.io/build-pipelinerun": "build-1",
+            }},
+            "spec": {"components": [{"containerImage": "other-attempt-image"}]},
+        })
+        assert info.input_image == "other-attempt-image"
+        return resolved_image
+
+    state = PipelineState.RELEASE_FAILED if failure else PipelineState.RELEASED
+    with patch.object(tracker, "_prepare_release_notification", side_effect=overlapping_snapshot), patch.object(module, "_read_resource", return_value={}), patch.object(module, "get_gav", return_value=GAV) as lookup, patch.object(module, "_fire_slack") as success, patch.object(module.threading, "Thread") as thread, patch.object(module, "send_slack_sync") as failed, patch.object(module, "analyze_failure", return_value=None):
+        tracker._transition(info, state, "release failed" if failure else "", body={"spec": {"snapshot": "released-snapshot"}})
+        if failure:
+            thread.call_args.kwargs["target"]()
+        message = (failed if failure else success).call_args.args[0]
+    if available:
+        lookup.assert_called_once_with(IMAGE)
+    else:
+        lookup.assert_not_called()
+    assert message.startswith(("❌ " if failure else "✅ ") + (GAV if available else "build (build-1)") + " —")
