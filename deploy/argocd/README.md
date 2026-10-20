@@ -51,7 +51,7 @@ GAV values are OCI manifest annotations (for example,
 downloading artifact layers. The Lightwell overlay enables enrichment with
 `IMAGE_METADATA_PROXY_URL`; leaving it unset disables lookups (the Calunga
 default). The watcher uses its existing `K8S_TOKEN` to fetch the single-component
-snapshot's digest-pinned input manifest when sending a release success message.
+snapshot's digest-pinned input manifest when sending a release success or failure message.
 Images are selected by the snapshot referenced by the release, rather than
 whichever snapshot event arrived last. If that snapshot has not been observed,
 the watcher reads it from the tenant API before attempting enrichment; an

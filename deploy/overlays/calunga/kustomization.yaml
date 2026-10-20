@@ -10,4 +10,4 @@ patches:
 images:
   - name: quay.io/calungaproject/releases-watcher
     newName: quay.io/calungaproject/releases-watcher
-    digest: sha256:c42a08ce578ec922c7b910b611f191b7f83ec2c21299df2c06858ac0f554c388
+    digest: sha256:58788decaa6ceb5f5c67dba570e8fadea9506ec8654316dbbe6a67f6d1301b8d
