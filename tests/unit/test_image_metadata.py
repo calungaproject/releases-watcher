@@ -119,7 +119,8 @@ def test_malformed_proxy_url_falls_back(proxy, monkeypatch):
 
 @pytest.mark.parametrize("cached", [False, True])
 @pytest.mark.parametrize("managed", [False, True])
-def test_success_uses_referenced_snapshot_even_if_latest_differs(monkeypatch, cached, managed):
+@pytest.mark.parametrize("failure", [False, True])
+def test_release_uses_referenced_snapshot_even_if_latest_differs(monkeypatch, cached, managed, failure):
     from calunga_release_watcher import tracker as module
     monkeypatch.setattr(module, "IMAGE_METADATA_PROXY_URL", "https://proxy.example.com")
     monkeypatch.setattr(module, "TENANT_NAMESPACE", "lightwell-poc-tenant")
@@ -138,12 +139,19 @@ def test_success_uses_referenced_snapshot_even_if_latest_differs(monkeypatch, ca
             "pac.test.appstudio.openshift.io/sha": "sha",
             ("appstudio.openshift.io/snapshot" if managed else "release.appstudio.openshift.io/snapshot"): "released-snapshot",
         }},
-        "status": {"conditions": [{"type": "Succeeded" if managed else "Released", "status": "True"}]},
+        "status": {"conditions": [{"type": "Succeeded" if managed else "Released", "status": "False" if failure else "True"}]},
     }
-    with patch.object(module, "_read_resource", return_value=snapshot) as read, patch.object(module, "get_gav", return_value=GAV) as lookup, patch.object(module, "_fire_slack") as slack:
+    info.application = "pnc-import-novel"
+    with patch.object(module, "_read_resource", return_value=snapshot) as read, patch.object(module, "get_gav", return_value=GAV) as lookup, patch.object(module, "_fire_slack") as slack, patch.object(module.threading, "Thread") as thread, patch.object(module, "send_slack_sync") as failed, patch.object(module, "analyze_failure", return_value=None):
         (tracker.on_release_pipelinerun if managed else tracker.on_release)(body)
+        if failure:
+            info.input_image = "next-attempt-image"
+            info.application = "next-application"
+            thread.call_args.kwargs["target"]()
+        message = (failed if failure else slack).call_args.args[0]
     lookup.assert_called_once_with(IMAGE)
-    assert slack.call_args.args[0].startswith("✅ " + GAV + " —")
+    assert message.startswith(("❌ " if failure else "✅ ") + GAV + " —")
+    assert "Application: pnc-import-novel." in message
     if cached:
         read.assert_not_called()
     else:

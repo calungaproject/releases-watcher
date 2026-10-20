@@ -240,7 +240,11 @@ def _handle_failure(
 ) -> None:
     from calunga_release_watcher.retrier import attempt_retry
 
-    release_link = info.release_pipeline_link if state == PipelineState.RELEASE_FAILED else ""
+    is_release_failure = state == PipelineState.RELEASE_FAILED
+    release_link = info.release_pipeline_link if is_release_failure else ""
+    input_image = info.input_image if is_release_failure else ""
+    fallback_title = f"{info.package_title} ({info.git_summary})"
+    application = info.application if is_release_failure else ""
 
     def _worker():
         analysis = None
@@ -252,7 +256,10 @@ def _handle_failure(
             except Exception:
                 logger.exception("%s AI analysis failed", info.log_prefix)
 
-        slack_msg = f"❌ {info.package_title} ({info.git_summary}) — {detail}"
+        gav = get_gav(input_image) if input_image else ""
+        slack_msg = f"❌ {gav or fallback_title} — {detail}"
+        if application:
+            slack_msg += f"\nApplication: {application}."
         if release_link:
             slack_msg += f"\n{release_link}"
         if analysis:
