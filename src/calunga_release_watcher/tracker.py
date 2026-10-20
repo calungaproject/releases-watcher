@@ -237,12 +237,14 @@ def _fire_slack(message: str, thread_ts: str = "") -> None:
 
 def _handle_failure(
     body: dict | None, info: "PipelineInfo", state: "PipelineState", detail: str,
+    *, input_image: str = "",
 ) -> None:
     from calunga_release_watcher.retrier import attempt_retry
 
     is_release_failure = state == PipelineState.RELEASE_FAILED
     release_link = info.release_pipeline_link if is_release_failure else ""
-    input_image = info.input_image if is_release_failure else ""
+    if not is_release_failure:
+        input_image = ""
     fallback_title = f"{info.package_title} ({info.git_summary})"
     application = info.application if is_release_failure else ""
 
@@ -355,7 +357,7 @@ class PipelineTracker:
     def get(self, key: str) -> PipelineInfo | None:
         return self._pipelines.get(key)
 
-    def _prepare_release_notification(self, info: PipelineInfo, body: dict) -> None:
+    def _prepare_release_notification(self, info: PipelineInfo, body: dict) -> str:
         """Resolve optional context without delaying or suppressing notification delivery."""
         labels = body.get("metadata", {}).get("labels", {})
         snapshot = (
@@ -377,9 +379,8 @@ class PipelineTracker:
         snapshot = snapshot or release.get("spec", {}).get("snapshot")
         # With an event, never borrow the most recently seen snapshot's image:
         # it may be a different artifact with the same SHA.
-        info.input_image = ""
         if not IMAGE_METADATA_PROXY_URL or not snapshot:
-            return
+            return ""
         ref = (TENANT_NAMESPACE, snapshot)
         if ref not in self._snapshot_images:
             resource = _read_resource("snapshots", snapshot, TENANT_NAMESPACE)
@@ -388,7 +389,7 @@ class PipelineTracker:
                 self._snapshot_images[ref] = (
                     components[0].get("containerImage", "") if len(components) == 1 else ""
                 )
-        info.input_image = self._snapshot_images.get(ref, "")
+        return self._snapshot_images.get(ref, "")
 
     @staticmethod
     def _start_release_attempt(
@@ -425,8 +426,9 @@ class PipelineTracker:
         if not self._live:
             return
 
+        input_image = info.input_image
         if body is not None and new_state in (PipelineState.RELEASED, PipelineState.RELEASE_FAILED):
-            self._prepare_release_notification(info, body)
+            input_image = self._prepare_release_notification(info, body)
 
         msg = f"{info.log_prefix} {new_state.value}"
         if detail:
@@ -434,11 +436,11 @@ class PipelineTracker:
 
         if new_state in FAILURE_STATES:
             logger.error(msg)
-            _handle_failure(body, info, new_state, detail)
+            _handle_failure(body, info, new_state, detail, input_image=input_image)
         elif new_state == PipelineState.RELEASED:
             logger.info(msg)
             application_context = f"Application: {info.application}. " if info.application else ""
-            gav = get_gav(info.input_image) if info.input_image else ""
+            gav = get_gav(input_image) if input_image else ""
             title = gav or f"{info.package_title} ({info.git_summary})"
             release_msg = (
                 f"✅ {title} — pipeline complete. "
