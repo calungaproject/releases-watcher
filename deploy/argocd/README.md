@@ -16,6 +16,7 @@ creating the Applications:
 |---|---|
 | `calunga-release-watcher-secrets` | `k8s-token`, `slack-token`, `slack-channel`, `gcp-sa-key` |
 | `lightwell-release-watcher-secret` | `k8s-token`, `slack-token`, `slack-channel`, `gcp-sa-key` |
+| `lightwell-python-release-watcher-secret` | `k8s-token`, `slack-token`, `slack-channel`, `gcp-sa-key` |
 
 The Kubernetes tokens authenticate to the remote clusters named by each
 overlay's `K8S_API_URL`; they are not service-account tokens for DNO.
@@ -37,6 +38,13 @@ DNO Argo applications. It binds the existing
 ```sh
 KUBECONFIG=/home/rhopp/temp/p01.kubeconfig \
   kubectl apply -f deploy/prerequisites/p01/lightwell-image-reader.yaml
+```
+
+The same pattern applies to the Python tenant:
+
+```sh
+KUBECONFIG=/home/rhopp/temp/p01.kubeconfig \
+  kubectl apply -f deploy/prerequisites/p01/lightwell-python-image-reader.yaml
 ```
 
 The ClusterRole grants `get`, `list`, and `watch` on
