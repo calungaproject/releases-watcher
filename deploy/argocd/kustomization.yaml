@@ -4,3 +4,4 @@ namespace: calunga--runtime-int
 resources:
   - calunga-application.yaml
   - lightwell-application.yaml
+  - lightwell-python-application.yaml
