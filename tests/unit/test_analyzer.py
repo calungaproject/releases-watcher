@@ -6,11 +6,13 @@ from calunga_release_watcher.analyzer import (
     FailureAnalysis,
     _build_context,
     _build_pipelinerun_context,
+    _build_release_failure_context,
     _call_claude,
     _get_child_taskruns,
     _get_failed_taskruns,
     _get_pod_logs,
     _get_test_pipelineruns_for_snapshot,
+    _resolve_managed_pipelinerun_ref,
     _truncate_context,
     analyze_failure,
     extract_failed_scenarios,
@@ -453,6 +455,152 @@ class TestBuildContext:
         info = SimpleNamespace(namespace="ns", log_prefix="[test]")
         result = _build_context(body, info, "tests failed")
         assert "No test PipelineRuns found" in result
+
+
+# ---------------------------------------------------------------------------
+# Release failure context (managed PipelineRun)
+# ---------------------------------------------------------------------------
+
+RELEASE_BODY = {
+    "kind": "Release",
+    "metadata": {"name": "rel-1", "namespace": "lightwell-poc-tenant"},
+    "status": {
+        "conditions": [
+            {"type": "Released", "status": "False", "reason": "Failed",
+             "message": "Release processing failed on managed pipelineRun"},
+            {"type": "ManagedPipelineProcessed", "status": "False", "reason": "Failed",
+             "message": ""},
+        ],
+        "managedPipelineAttempts": [{
+            "status": "Failed",
+            "failureReason": "Error",
+            "lastTask": "generate-security-metadata",
+            "lastStep": "run",
+            "pipelineRun": "rhtap-releng-tenant/managed-wgmdn",
+            "successfulTasks": 6,
+        }],
+        "managedProcessing": {"pipelineRun": "rhtap-releng-tenant/managed-wgmdn"},
+    },
+}
+
+
+class TestResolveManagedPipelinerunRef:
+    def test_prefers_attempt_reference(self):
+        status = {
+            "managedPipelineAttempts": [{"pipelineRun": "ns/managed-attempt"}],
+            "managedProcessing": {"pipelineRun": "ns/managed-processing"},
+        }
+        assert _resolve_managed_pipelinerun_ref(status) == "ns/managed-attempt"
+
+    def test_latest_attempt_wins(self):
+        status = {
+            "managedPipelineAttempts": [
+                {"pipelineRun": "ns/managed-old"},
+                {"pipelineRun": "ns/managed-new"},
+            ],
+        }
+        assert _resolve_managed_pipelinerun_ref(status) == "ns/managed-new"
+
+    def test_falls_back_to_managed_processing(self):
+        status = {"managedProcessing": {"pipelineRun": "ns/managed-processing"}}
+        assert _resolve_managed_pipelinerun_ref(status) == "ns/managed-processing"
+
+    def test_no_reference(self):
+        assert _resolve_managed_pipelinerun_ref({}) == ""
+
+
+class TestBuildReleaseFailureContext:
+    @patch("calunga_release_watcher.analyzer._build_pipelinerun_context")
+    @patch("calunga_release_watcher.analyzer._get_managed_pipelinerun")
+    def test_fetches_managed_pipelinerun_in_its_namespace(self, mock_get_plr, mock_build_plr):
+        mock_get_plr.return_value = {"metadata": {"name": "managed-wgmdn"}}
+        parts = []
+        _build_release_failure_context(RELEASE_BODY, parts)
+
+        mock_get_plr.assert_called_once_with("managed-wgmdn", "rhtap-releng-tenant")
+        mock_build_plr.assert_called_once_with(
+            {"metadata": {"name": "managed-wgmdn"}},
+            "rhtap-releng-tenant",
+            parts,
+            plr_label="rhtap-releng-tenant/managed-wgmdn",
+        )
+
+    @patch("calunga_release_watcher.analyzer._build_pipelinerun_context")
+    @patch("calunga_release_watcher.analyzer._get_managed_pipelinerun")
+    def test_includes_conditions_and_attempts(self, mock_get_plr, mock_build_plr):
+        mock_get_plr.return_value = {"metadata": {"name": "managed-wgmdn"}}
+        parts = []
+        _build_release_failure_context(RELEASE_BODY, parts)
+
+        labels = [p[0] for p in parts]
+        assert "Release condition 'Released'" in labels
+        assert "Managed pipeline attempt" in labels
+        attempt_content = next(p[1] for p in parts if p[0] == "Managed pipeline attempt")
+        assert "generate-security-metadata" in attempt_content
+        assert "rhtap-releng-tenant/managed-wgmdn" in attempt_content
+
+    @patch("calunga_release_watcher.analyzer._build_pipelinerun_context")
+    @patch("calunga_release_watcher.analyzer._get_managed_pipelinerun", return_value=None)
+    def test_notes_gc_when_pipelinerun_gone(self, mock_get_plr, mock_build_plr):
+        parts = []
+        _build_release_failure_context(RELEASE_BODY, parts)
+        content = _truncate_context(parts)
+        assert "could not be fetched" in content
+        assert "garbage-collected" in content
+        mock_build_plr.assert_not_called()
+
+    @patch("calunga_release_watcher.analyzer._build_pipelinerun_context")
+    @patch("calunga_release_watcher.analyzer._get_managed_pipelinerun")
+    def test_notes_missing_reference(self, mock_get_plr, mock_build_plr):
+        body = {
+            "kind": "Release",
+            "metadata": {"name": "rel-1", "namespace": "ns"},
+            "status": {"conditions": [
+                {"type": "ManagedPipelineProcessed", "status": "False", "reason": "Failed",
+                 "message": 'pipelineruns.tekton.dev "managed-1" is forbidden'},
+            ]},
+        }
+        parts = []
+        _build_release_failure_context(body, parts)
+        content = _truncate_context(parts)
+        assert "No managed PipelineRun reference" in content
+        assert "is forbidden" in content
+        mock_get_plr.assert_not_called()
+        mock_build_plr.assert_not_called()
+
+    @patch("calunga_release_watcher.analyzer._build_pipelinerun_context")
+    @patch("calunga_release_watcher.analyzer._get_managed_pipelinerun")
+    def test_skips_conditions_without_messages(self, mock_get_plr, mock_build_plr):
+        mock_get_plr.return_value = {"metadata": {"name": "managed-wgmdn"}}
+        parts = []
+        _build_release_failure_context(RELEASE_BODY, parts)
+        labels = [p[0] for p in parts]
+        assert "Release condition 'ManagedPipelineProcessed'" not in labels
+
+
+class TestBuildContextReleasePath:
+    @patch("calunga_release_watcher.analyzer._build_release_failure_context")
+    def test_release_uses_release_path(self, mock_build_release):
+        body = {
+            "kind": "Release",
+            "metadata": {"name": "rel-1", "namespace": "lightwell-poc-tenant"},
+            "status": {},
+        }
+        info = SimpleNamespace(namespace="lightwell-poc-tenant", log_prefix="[test]")
+        result = _build_context(body, info, "release failed")
+        assert "release failed" in result
+        mock_build_release.assert_called_once()
+
+    @patch("calunga_release_watcher.analyzer._build_pipelinerun_context")
+    def test_pipelinerun_path_unchanged(self, mock_build_plr):
+        body = {
+            "kind": "PipelineRun",
+            "metadata": {"name": "plr-1", "namespace": "ns"},
+            "status": {"conditions": [{"status": "False", "reason": "Failed", "message": "err"}]},
+        }
+        info = SimpleNamespace(namespace="ns", log_prefix="[test]")
+        _build_context(body, info, "build failed")
+        mock_build_plr.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

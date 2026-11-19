@@ -231,6 +231,42 @@ def get_named_condition(body: dict, condition_type: str) -> tuple[str | None, st
     return None, None
 
 
+def release_failure_detail(body: dict, name: str, reason: str | None) -> str:
+    """Build the Slack detail for a failed Release.
+
+    The Released condition only says "Failed"; the specifics live in
+    status.managedPipelineAttempts (failing task/step/reason of the managed
+    pipeline) or, when the managed PipelineRun was never created, in the
+    ManagedPipelineProcessed condition message (e.g. admission denial).
+    """
+    detail = f"Release FAILED: {name} (reason={reason})"
+    status = body.get("status", {})
+
+    for attempt in reversed(status.get("managedPipelineAttempts", [])):
+        if attempt.get("status") != "Failed":
+            continue
+        last_task = attempt.get("lastTask", "")
+        last_step = attempt.get("lastStep", "")
+        where = "/".join(p for p in (last_task, last_step) if p)
+        if where:
+            detail += f" — managed pipeline task {where} failed"
+            failure_reason = attempt.get("failureReason", "")
+            if failure_reason:
+                detail += f" with {failure_reason}"
+            plr = attempt.get("pipelineRun", "")
+            if plr:
+                detail += f" ({plr})"
+        return detail
+
+    # No failed managed-pipeline attempt recorded: surface the specific
+    # condition message (covers failures before/at PipelineRun creation).
+    for cond in status.get("conditions", []):
+        if cond.get("type") == "ManagedPipelineProcessed" and cond.get("message"):
+            detail += f" — {cond['message']}"
+            break
+    return detail
+
+
 def _fire_slack(message: str, thread_ts: str = "") -> None:
     threading.Thread(target=send_slack_sync, args=(message, thread_ts), daemon=True).start()
 
@@ -640,7 +676,7 @@ class PipelineTracker:
                 self._transition(
                     info,
                     PipelineState.RELEASE_FAILED,
-                    f"Release FAILED: {name} (reason={released_reason})",
+                    release_failure_detail(body, name, released_reason),
                     body=body,
                 )
         else:

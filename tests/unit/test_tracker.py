@@ -13,6 +13,7 @@ from calunga_release_watcher.tracker import (
     extract_tracking_key,
     get_condition_status,
     get_named_condition,
+    release_failure_detail,
 )
 
 SHA = "abc1234567890def"
@@ -240,6 +241,70 @@ class TestGetNamedCondition:
         status, reason = get_named_condition(body, "NoSuchCondition")
         assert status is None
         assert reason is None
+
+
+class TestReleaseFailureDetail:
+    def test_includes_failed_managed_attempt(self):
+        body = make_body(kind="Release", conditions=[
+            {"type": "Released", "status": "False", "reason": "Failed",
+             "message": "Release processing failed on managed pipelineRun"},
+        ], extra_status={
+            "managedPipelineAttempts": [{
+                "status": "Failed",
+                "failureReason": "Error",
+                "lastTask": "generate-security-metadata",
+                "lastStep": "run",
+                "pipelineRun": "rhtap-releng-tenant/managed-wgmdn",
+                "successfulTasks": 6,
+            }],
+        })
+        detail = release_failure_detail(body, "rel-1", "Failed")
+        assert detail == (
+            "Release FAILED: rel-1 (reason=Failed) — managed pipeline task "
+            "generate-security-metadata/run failed with Error "
+            "(rhtap-releng-tenant/managed-wgmdn)"
+        )
+
+    def test_uses_latest_failed_attempt(self):
+        body = make_body(kind="Release", extra_status={
+            "managedPipelineAttempts": [
+                {"status": "Failed", "lastTask": "publish", "lastStep": "run",
+                 "failureReason": "Error", "pipelineRun": "ns/managed-old"},
+                {"status": "Failed", "lastTask": "sign", "lastStep": "run",
+                 "failureReason": "Timeout", "pipelineRun": "ns/managed-new"},
+            ],
+        })
+        detail = release_failure_detail(body, "rel-1", "Failed")
+        assert "sign/run failed with Timeout (ns/managed-new)" in detail
+
+    def test_falls_back_to_condition_message(self):
+        body = make_body(kind="Release", conditions=[
+            {"type": "Released", "status": "False", "reason": "Failed",
+             "message": "Release processing failed on managed pipelineRun creation"},
+            {"type": "ManagedPipelineProcessed", "status": "False", "reason": "Failed",
+             "message": 'pipelineruns.tekton.dev "managed-zf7nw" is forbidden'},
+        ])
+        detail = release_failure_detail(body, "rel-1", "Failed")
+        assert detail == (
+            "Release FAILED: rel-1 (reason=Failed) — "
+            'pipelineruns.tekton.dev "managed-zf7nw" is forbidden'
+        )
+
+    def test_no_extras(self):
+        body = make_body(kind="Release")
+        assert release_failure_detail(body, "rel-1", "Failed") == \
+            "Release FAILED: rel-1 (reason=Failed)"
+
+    def test_attempt_without_task_still_reports_reason(self):
+        body = make_body(kind="Release", extra_status={
+            "managedPipelineAttempts": [{
+                "status": "Failed",
+                "failureReason": "Error",
+                "pipelineRun": "ns/managed-1",
+            }],
+        })
+        detail = release_failure_detail(body, "rel-1", "Failed")
+        assert detail == "Release FAILED: rel-1 (reason=Failed)"
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +703,28 @@ class TestOnRelease:
         info = tracker.get(SHA)
         assert info.state == PipelineState.RELEASE_FAILED
         mock_handle.assert_called_once()
+
+    @patch("calunga_release_watcher.tracker._handle_failure")
+    def test_release_failed_detail_includes_managed_attempt(self, mock_handle):
+        tracker = PipelineTracker()
+        tracker._live = True
+        body = make_body(name="rel-1", kind="Release", conditions=[
+            {"type": "Released", "status": "False", "reason": "Failed",
+             "message": "Release processing failed on managed pipelineRun"},
+        ], extra_status={
+            "managedPipelineAttempts": [{
+                "status": "Failed",
+                "failureReason": "Error",
+                "lastTask": "generate-security-metadata",
+                "lastStep": "run",
+                "pipelineRun": "rhtap-releng-tenant/managed-wgmdn",
+            }],
+        })
+        tracker.on_release(body)
+        assert tracker.get(SHA).state == PipelineState.RELEASE_FAILED
+        detail = mock_handle.call_args[0][3]
+        assert "generate-security-metadata/run failed with Error" in detail
+        assert "managed-wgmdn" in detail
 
     @patch("calunga_release_watcher.tracker._handle_failure")
     def test_no_sha_is_noop(self, mock_handle):
