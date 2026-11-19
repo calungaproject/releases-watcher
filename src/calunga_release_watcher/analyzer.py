@@ -222,6 +222,86 @@ def _build_pipelinerun_context(
             ))
 
 
+def _get_managed_pipelinerun(name: str, namespace: str) -> dict | None:
+    api = k8s_client.CustomObjectsApi(get_k8s_client())
+    try:
+        return api.get_namespaced_custom_object(
+            group="tekton.dev",
+            version="v1",
+            namespace=namespace,
+            plural="pipelineruns",
+            name=name,
+        )
+    except Exception:
+        logger.warning("Failed to fetch managed PipelineRun %s/%s", namespace, name)
+        return None
+
+
+def _resolve_managed_pipelinerun_ref(status: dict) -> str:
+    """Return the failing (or current) managed PipelineRun ref, e.g. 'ns/name'.
+
+    The Release status carries the reference in two places: per-attempt in
+    managedPipelineAttempts (preferred — it points at the attempt that failed)
+    and in managedProcessing (the attempt currently being processed).
+    """
+    for attempt in reversed(status.get("managedPipelineAttempts", [])):
+        if attempt.get("pipelineRun"):
+            return attempt["pipelineRun"]
+    return status.get("managedProcessing", {}).get("pipelineRun", "")
+
+
+def _build_release_failure_context(body: dict, context_parts: list[tuple[str, str]]) -> None:
+    """Gather failure context from a Release object.
+
+    A Release is not a PipelineRun: it has no status.childReferences, so the
+    generic PipelineRun path finds nothing. The specifics live in the Release
+    conditions (notably ManagedPipelineProcessed, which carries e.g. admission
+    denials verbatim), in managedPipelineAttempts (failing task/step/reason),
+    and in the managed PipelineRun itself, which runs in the release namespace.
+    """
+    status = body.get("status", {})
+
+    for cond in status.get("conditions", []):
+        if cond.get("message"):
+            context_parts.append((
+                f"Release condition '{cond.get('type', '?')}'",
+                f"status={cond.get('status')} reason={cond.get('reason')} "
+                f"message={cond.get('message', '')}",
+            ))
+
+    for attempt in status.get("managedPipelineAttempts", []):
+        context_parts.append((
+            "Managed pipeline attempt",
+            f"pipelineRun={attempt.get('pipelineRun', '?')} "
+            f"status={attempt.get('status', '?')} "
+            f"failureReason={attempt.get('failureReason', 'n/a')} "
+            f"lastTask={attempt.get('lastTask', 'n/a')} "
+            f"lastStep={attempt.get('lastStep', 'n/a')} "
+            f"successfulTasks={attempt.get('successfulTasks', 'n/a')}",
+        ))
+
+    plr_ref = _resolve_managed_pipelinerun_ref(status)
+    if not plr_ref or "/" not in plr_ref:
+        context_parts.append((
+            "Note",
+            "No managed PipelineRun reference found on the Release "
+            "(it may have failed before the PipelineRun was created)",
+        ))
+        return
+
+    plr_namespace, plr_name = plr_ref.split("/", 1)
+    plr = _get_managed_pipelinerun(plr_name, plr_namespace)
+    if plr is None:
+        context_parts.append((
+            "Note",
+            f"Managed PipelineRun {plr_ref} could not be fetched "
+            "(it may have been garbage-collected)",
+        ))
+        return
+
+    _build_pipelinerun_context(plr, plr_namespace, context_parts, plr_label=plr_ref)
+
+
 def _build_context(body: dict, info, detail: str) -> str:
     namespace = info.namespace or body.get("metadata", {}).get("namespace", "")
     context_parts: list[tuple[str, str]] = []
@@ -232,8 +312,11 @@ def _build_context(body: dict, info, detail: str) -> str:
         return _truncate_context(context_parts)
 
     is_snapshot = body.get("kind") == "Snapshot"
+    is_release = body.get("kind") == "Release"
 
-    if is_snapshot:
+    if is_release:
+        _build_release_failure_context(body, context_parts)
+    elif is_snapshot:
         snapshot_name = body.get("metadata", {}).get("name", "")
         test_plrs = _get_test_pipelineruns_for_snapshot(snapshot_name, namespace)
         if not test_plrs:
