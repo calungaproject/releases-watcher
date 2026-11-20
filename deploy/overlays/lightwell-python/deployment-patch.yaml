@@ -33,6 +33,13 @@ spec:
                   key: slack-channel
             - name: NO_PROXY
               value: ".svc,.cluster.local,10.0.0.0/8,172.0.0.0/8"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "100m"
+            limits:
+              memory: "2Gi"
+              cpu: "500m"
       volumes:
         - name: gcp-sa-key
           secret:
